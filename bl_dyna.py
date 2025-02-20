@@ -318,7 +318,7 @@ EntityCls_PagmFields = {
 TopoClsMap = {
     "nodes": ["*NODE"],
     #
-    "elems": ["*ELEMENT_SOLID", "*ELEMENT_SHELL"]
+    "elems": ["*ELEMENT_SOLID", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
     + ["*ELEMENT_BEAM", "*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"],
     "parts": ["*PART"],
     "define_curve": ["*DEFINE_CURVE"],
@@ -362,53 +362,35 @@ def split_fixed_width(line, widths: list[int], replace_param: dict[str, str] = N
 
 
 def format_numeric2str(value: int | float, len_fomrat: int = 8):
-    integer_part = decimal_part = ""
+    int_part = dec_part = ""
+    len_fomrat = len_fomrat if len_fomrat > 7 else 7
     if isinstance(value, float):
         _strofvalue = f"{value:.{len_fomrat}f}".split(".", 1)
-        integer_part = _strofvalue[0]
-        decimal_part = _strofvalue[1].rstrip("0") or "0"
+        int_part = _strofvalue[0]
+        dec_part = _strofvalue[1].rstrip("0") or "0"
     else:
-        integer_part = str(value)
-    if integer_part[0] in ["+", "-"]:
-        integer_part = integer_part[1:]
-    int_len = len(integer_part)
-    int_dec = len(decimal_part)
-    if int_len > len_fomrat:
-        if len_fomrat < 7:
-            result = ""
-        else:
-            result = f"{value:+.{len_fomrat-7}e}"
-    elif int_len == len_fomrat:
-        if value >= 0:
+        int_part = str(value)
+    if int_part[0] in ["+", "-"]:
+        int_part = int_part[1:]
+    int_len = len(int_part)
+    dec_len = len(dec_part)
+    if int_len > len_fomrat - 1:
+        if int_len == len_fomrat and value >= 0:
             result = f"{int(value):{len_fomrat}d}"
         else:
             result = f"{value:+.{len_fomrat-7}e}"
     elif 1 < int_len <= len_fomrat - 1:
-        result = f"{value:>.{int_dec}f}"[:len_fomrat]
-        result = result.rjust(len_fomrat)
+        result = f"{value:>.{dec_len}f}"[:len_fomrat]
     else:
-        if integer_part == "0":
-            if decimal_part:
-                first_non_zero = (
-                    [i for i, ch in enumerate(decimal_part) if ch != "0"][0]
-                    if decimal_part != "0"
-                    else 0
-                )
-                if first_non_zero > len_fomrat - 7:
-                    if len_fomrat < 7:
-                        result = ""
-                    else:
-                        result = f"{value:+.{len_fomrat-7}e}"
-                else:
-                    result = f"{value:>+.{int_dec}f}"[:len_fomrat]
-                    result = result.rjust(len_fomrat)
-            else:
-                result = f"{value:>+.0f}"[:len_fomrat]
-                result = result.rjust(len_fomrat)
+        ix_isnot0 = (
+            [i for i, ch in enumerate(dec_part) if ch != "0"][0] if dec_part not in ["", "0"] else 0
+        )
+        if ix_isnot0 > len_fomrat - 7 + (2 if value >= 0 else 1):
+            result = f"{value:.{len_fomrat-7}e}"
         else:
-            result = f"{value:>+.{int_dec}f}"[:len_fomrat]
-            result = result.rjust(len_fomrat)
-    return result if result else "不能格式化"
+            result = f"{value:>.{dec_len}f}"[:len_fomrat]
+    result = result.rjust(len_fomrat) if result else "不能格式化"
+    return result
 
 
 def split_sequence(seq, num):
@@ -2119,6 +2101,7 @@ class bl_keyfile:
                 if _e_type in [
                     "*ELEMENT_SOLID",
                     "*ELEMENT_SHELL",
+                    "*ELEMENT_SHELL_THICKNESS",
                     "*ELEMENT_BEAM",
                     "*ELEMENT_BEAM_OFFSET",
                     "*ELEMENT_BEAM_ORIENTATION",
@@ -2131,7 +2114,7 @@ class bl_keyfile:
                             progress_bar=p,
                             bar_title=_e_type,
                         )
-                    if _e_type in ["*ELEMENT_SHELL"]:
+                    if _e_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
                         _f_i = lambda b, k, p=0: self.__create_elems_batch(
                             cls=LsDyna_ELEMENT_SHELL,
                             batch_data=b,
@@ -2547,7 +2530,6 @@ class bl_keyfile:
     def save_kf(self, path):
         with open(path, "w") as file:
             if self.parsing_topo:
-                #! 并不一定所有get_*都解析过
                 passed_k = []
                 _k = []
                 for v in self.__ori_kw_order:
