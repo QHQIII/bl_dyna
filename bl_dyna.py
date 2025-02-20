@@ -379,7 +379,7 @@ def format_numeric2str(value: int | float, len_fomrat: int = 8):
             result = f"{int(value):{len_fomrat}d}"
         else:
             result = f"{value:+.{len_fomrat-7}e}"
-    elif 1 < int_len <= len_fomrat - 1:
+    elif 1 < int_len:
         result = f"{value:>.{dec_len}f}"[:len_fomrat]
     else:
         ix_isnot0 = (
@@ -930,9 +930,23 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         self.keyword = keyword
         self.id = int(id)
         self.id_part = int(id_part)
-        self.id_nodes = [int(each) for each in id_nodes]
+        self.id_nodes = [int(i) for i in id_nodes]
+        self.reshape_nodes(id_nodes)
         self.card_EX = card_EX
         self.__dict__["__is_init__"] = False
+
+    def reshape_nodes(self, id_nodes):
+        self.__dict__["__is_inner__"] = True
+        _l_in = len(self.id_nodes)
+        self.__id_nodes__ = self.id_nodes
+        if "SOLID" in self.keyword:
+            if _l_in < 6:
+                self.__id_nodes__ = self.id_nodes + [self.id_nodes[-1]] * (8 - _l_in)
+            elif _l_in == 6:
+                self.__id_nodes__ = (
+                    self.id_nodes[:4] + [self.id_nodes[4]] * 2 + [self.id_nodes[5]] * 2
+                )
+        self.__dict__["__is_inner__"] = False
 
     def get_related_nodes(self, return_asdf=0):
         self.__dict__["__is_inner__"] = True
@@ -970,8 +984,8 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         centercoords = self.get_centercoords(1)
         if centercoords:
             lines.append(f"  Coords:".ljust(10) + f"{centercoords}")
-        lines.append(f"  Nodes:".ljust(10) + f"{len(self.id_nodes)}")
-        lines.append(f"    ids:".ljust(10) + f"{self.id_nodes}")
+        lines.append(f"  Nodes:".ljust(10) + f"{len(self.__id_nodes__)}")
+        lines.append(f"    ids:".ljust(10) + f"{self.__id_nodes__}")
         lines.append(f"  partid:".ljust(10) + f"{self.id_part}")
         self.__dict__["__is_inner__"] = False
         return "\n".join(lines)
@@ -1037,7 +1051,7 @@ class LsDyna_ELEMENT_SOLID(__LsDyna_Elem_Factory):
             _fn2s(self.id, _cf_0[0]),
             _fn2s(self.id_part, _cf_0[1]),
             "\n",
-            "".join([_fn2s(each, _cf_1[index]) for index, each in enumerate(self.id_nodes)]),
+            "".join([_fn2s(each, _cf_1[index]) for index, each in enumerate(self.__id_nodes__)]),
             "\n",
         ]
         self.str_cardsonly = "".join(str_cardsonly_parts) + self.card_EX
@@ -1090,7 +1104,9 @@ class LsDyna_ELEMENT_SHELL(__LsDyna_Elem_Factory):
         str_cardsonly_parts = [
             _fn2s(self.id, _cf_0[0]),
             _fn2s(self.id_part, _cf_0[1]),
-            "".join([_fn2s(each, _cf_0[index + 2]) for index, each in enumerate(self.id_nodes)]),
+            "".join(
+                [_fn2s(each, _cf_0[index + 2]) for index, each in enumerate(self.__id_nodes__)]
+            ),
             "\n",
         ]
         self.str_cardsonly = "".join(str_cardsonly_parts) + self.card_EX
@@ -1170,7 +1186,7 @@ class LsDyna_ELEMENT_BEAM(__LsDyna_Elem_Factory):
             "".join(
                 [
                     (_fn2s(each, _cf_0[index + 2]) if not each == "" else " " * _cf_0[index + 2])
-                    for index, each in enumerate(self.id_nodes + self.card1_add_fields)
+                    for index, each in enumerate(self.__id_nodes__ + self.card1_add_fields)
                 ]
             ),
             "\n",
@@ -1666,17 +1682,17 @@ class bl_keyfile:
                     self.__filtercache = {}
                 _kn = et_type + k + field
                 if _kn not in self.__filtercache.keys():
-                    index_map = defaultdict(list)
-                    for i, id_list in _df[field].to_dict().items():
-                        if isinstance(_df[field].iloc[0], (list, tuple, set, np.ndarray)):
-                            for id_ in id_list:
-                                index_map[id_].append(i)
+                    ix_map = defaultdict(list)
+                    for _ix, _r_ids in _df[field].to_dict().items():
+                        if isinstance(_df[field].iloc[0], (list, tuple, np.ndarray)):
+                            for _r_id in _r_ids:
+                                ix_map[_r_id].append(_ix)
                         else:
-                            index_map[id_list].append(i)
-                    _ex_ix = index_map.keys()
+                            ix_map[_r_ids].append(_ix)
+                    _ex_ix = ix_map.keys()
                     _ex_dd = _df.to_dict(orient="index")
                     self.__filtercache[_kn] = {
-                        "_ex_ia": index_map,
+                        "_ex_ia": ix_map,
                         "_ex_ix": _ex_ix,
                         "_ex_dd": _ex_dd,
                     }
@@ -1920,7 +1936,7 @@ class bl_keyfile:
             )
         return [LsDyna_NODE(self, **row, keyword_settings=kw_settings) for row in batch_data]
 
-    def get_nodes(self, node_cardlines: list | str = "", kw_type="*NODE"):
+    def get_nodes(self, node_cardlines: list | str = "", kw_type="*NODE", is_init=1):
         self.parsing_topo = 1
         self.__topocls_name__.update({"nodes": TopoClsMap["nodes"]})
         _all_cards = defaultdict(list)
@@ -2036,7 +2052,7 @@ class bl_keyfile:
                 _f_r = lambda _cf_0: [
                     list(map(_f_f, split_fixed_width(_l, _cf_0))) for _c in _e_c for _l in _c if _l
                 ]
-                _f_u = lambda x: [_id for _id, _ in groupby(x) if _id]
+                _f_u = lambda x: list(dict.fromkeys([_id for _id in x if _id]))
                 if _e_type in ["*ELEMENT_SOLID"]:
                     _cf_0 = self.__EntityCls_CardFields[_e_type][1]
                     _elems = _f_r(_cf_0)
