@@ -1975,7 +1975,9 @@ class bl_keyfile:
                     dtype={"id": "int32", "x": "float64", "y": "float64", "z": "float64"},
                 )
                 nodes_group_by_type[_n_type] = nodes
-            ...
+        for _n_type, v in nodes_group_by_type.items():
+            if v.duplicated(subset=["id"]).any():
+                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_n_type}")
         if not node_cardlines:
             if is_init:
                 for _n_type, v in nodes_group_by_type.items():
@@ -2116,6 +2118,9 @@ class bl_keyfile:
                 elems = elems.astype(dtype={"id": "int32", "id_part": "int32"})
                 elems["id_nodes"] = elems["id_nodes"].apply(lambda x: [int(i) for i in x])
                 elems_group_by_type[_e_type] = elems
+        for _e_type, v in elems_group_by_type.items():
+            if v.duplicated(subset=["id"]).any():
+                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_e_type}")
         if not elem_cardlines:
             if is_init:
                 for _e_type, _e_c in elems_group_by_type.items():
@@ -2224,7 +2229,9 @@ class bl_keyfile:
                     for key in keys:
                         parts[key] = parts[key].apply(lambda x: func(x) if not x == "" else x)
                 parts_group_by_type[_p_type] = parts
-            ...
+        for _p_type, v in parts_group_by_type.items():
+            if v.duplicated(subset=["id"]).any():
+                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_p_type}")
         if not part_cardlines:
             if is_init:
                 for _p_type, _p_c in parts_group_by_type.items():
@@ -2316,7 +2323,9 @@ class bl_keyfile:
                     for key in keys:
                         curves[key] = curves[key].apply(lambda x: func(x) if not x == "" else x)
                 curves_group_by_type[_c_type] = curves
-            ...
+        for _c_type, v in curves_group_by_type.items():
+            if v.duplicated(subset=["id"]).any():
+                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_c_type}")
         if not curve_cardlines:
             if is_init:
                 for _c_type, v in curves_group_by_type.items():
@@ -2407,6 +2416,9 @@ class bl_keyfile:
                 )
                 sets_group_by_type[_s_type] = _setslist
             ...
+        for _n_type, v in sets_group_by_type.items():
+            if v.duplicated(subset=["id"]).any():
+                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_n_type}")
         if not set_cardlines:
             if is_init:
                 for _s_type, v in sets_group_by_type.items():
@@ -2606,6 +2618,8 @@ class bl_keyfile:
         return path
 
 
+# %%
+# %%
 if __name__ == "__main__":
     import time, cProfile, pstats
 
