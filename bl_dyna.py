@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.spatial import distance
-import pathlib, io, copy, ast
+import pathlib, copy
 from types import MappingProxyType
 from collections import defaultdict
 from itertools import groupby
@@ -339,7 +339,7 @@ def convert_to_tuple(nested_list):
     return nested_list
 
 
-def split_fixed_width(line, widths: list[int], replace_param: dict[str, str] = None):
+def split_bywidth(line, widths: list[int], replace_param: dict[str, str] = None):
     line = line.rstrip("\n")
     fields = []
     index = 0
@@ -959,16 +959,15 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         _rnd_c = [(n["x"], n["y"], n["z"]) for n in _rns]
         _len = len(_rnd_c)
         _center = (
-            round(sum([n["x"] for n in _rns]) / _len, 5),
-            round(sum([n["y"] for n in _rns]) / _len, 5),
-            round(sum([n["z"] for n in _rns]) / _len, 5),
+            round(sum([n[0] for n in _rnd_c]) / _len, 5),
+            round(sum([n[1] for n in _rnd_c]) / _len, 5),
+            round(sum([n[2] for n in _rnd_c]) / _len, 5),
         )
         _dist = "平均边长未计算"
         if return_size:
             _rnd_c = _rnd_c[:5]
             dist_matrix = distance.cdist(_rnd_c, _rnd_c, "euclidean")
-            np.fill_diagonal(dist_matrix, np.nan)
-            _dist = np.nanmean(dist_matrix)
+            _dist = np.mean(dist_matrix[dist_matrix != 0])
         self.__dict__["__is_inner__"] = False
         return _center, _dist
 
@@ -1581,7 +1580,6 @@ class bl_keyfile:
         keyfile,
         parsing_topo=True,
         is_init=1,
-        engine="bl",
         acc_initbythread=0,
         encoding="utf-8",
     ):
@@ -1593,8 +1591,8 @@ class bl_keyfile:
             if parsing_topo:
                 self.__parsing_topo = parsing_topo
                 self.__acc_initbythread = acc_initbythread
-                self.__topocls_name__ = TopoClsMap
-                self.read_kf(self.kfilepath, engine=engine.lower())
+                self.__topocls_name__ = copy.deepcopy(TopoClsMap)
+                self.read_kf(self.kfilepath)
                 self.collect_PARAMETER()
                 self.get_nodes(is_init=is_init)
                 self.get_elems(is_init=is_init)
@@ -1605,7 +1603,7 @@ class bl_keyfile:
                 self.collect_portion_SECTION()
             else:
                 self.__topocls_name__ = {}
-                self.read_kf(self.kfilepath, engine=engine.lower())
+                self.read_kf(self.kfilepath)
 
     def __set_params(self):
         self.kfilepath = ""
@@ -1622,7 +1620,7 @@ class bl_keyfile:
         )
         self.include_kfs = []
         self.__param_kw = ("*PARAMETER", "*PARAMETER_EXPRESSION")
-        self.__acc_kwpre = ["*NODE", "*ELEMENT_SOLID", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
+        self.__acc_kwpre = TopoClsMap["nodes"] + TopoClsMap["elems"]
         self.__ori_kw_order = []
         self.__diff_kf = {"add": [], "del": [], "mod": []}
         self.diff_kf = MappingProxyType(self.__diff_kf)
@@ -1721,7 +1719,7 @@ class bl_keyfile:
         kw_lines: list[str] = kf_lines[1:]
         if (
             kw_title == "*ELEMENT_SOLID"
-            and len(split_fixed_width(kw_lines[0], [8] * 10)) > 2
+            and len(split_bywidth(kw_lines[0], [8] * 10)) > 2
             and len(self.__EntityCls_CardFields["*ELEMENT_SOLID"]) > 1
         ):
             self.__EntityCls_CardFields["*ELEMENT_SOLID"] = [[8] * 10]
@@ -1850,7 +1848,6 @@ class bl_keyfile:
                     unit="",
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
                 )
-            _topo_kw = sum(self.__topocls_name__.values(), [])
             for _s, _e in _items:
                 entity = self.__read_kwstr__(kf_lines=kf_lines[_s:_e])
                 _e_kw = entity.keyword
@@ -1890,7 +1887,6 @@ class bl_keyfile:
                             else:
                                 path = pathlib.Path(kfilepath).parent / path
                             _include_kfs.append(path)
-                    print(_include_kfs)
                     self.include_kfs.extend(_include_kfs)
                     for include_kf in _include_kfs:
                         self.read_kf(include_kf, kwinkf)
@@ -1904,15 +1900,6 @@ class bl_keyfile:
                     self.__ori_kw_order = self.__ori_kw_order + [_end[-1]]
             self.keywords: dict[str, LsDyna_ENTITY] = kwinkf
             return self
-        if engine == "qd":
-            import qd.cae.dyna as qddyna
-
-            kf_qd = qddyna.KeyFile(
-                str(kfilepath),
-                read_keywords=True,
-                parse_mesh=False,
-                load_includes=True,
-            )
 
     def __acc_initcls(self, kw_settings, data_dicts, func, num=1, bar_title=""):
         batches = split_sequence(data_dicts, num)
@@ -1972,9 +1959,16 @@ class bl_keyfile:
         for _n_type, v in _all_cards.items():
             if _n_type in ["*NODE"]:
                 _cf_0 = self.__EntityCls_CardFields["*NODE"][0]
+                _f_b = lambda x: tqdm(
+                    x,
+                    desc=f"    {_n_type} ".ljust(30),
+                    leave=False,
+                    unit="",
+                    bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                )
                 _f_f = lambda x: x if x.strip() else ""
                 _nodes = [
-                    list(map(_f_f, split_fixed_width(_l, _cf_0))) for _c in v for _l in _c if _l
+                    list(map(_f_f, split_bywidth(_l, _cf_0))) for _c in v for _l in _f_b(_c) if _l
                 ]
                 nodes = pd.DataFrame([n[:4] for n in _nodes], columns=_d_c)
                 nodes["card1_add_fields"] = [
@@ -2056,9 +2050,19 @@ class bl_keyfile:
                 "*ELEMENT_BEAM_OFFSET",
                 "*ELEMENT_BEAM_ORIENTATION",
             ]:
+                _f_b = lambda x: tqdm(
+                    x,
+                    desc=f"    {_e_type} ".ljust(30),
+                    leave=False,
+                    unit="",
+                    bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                )
                 _f_f = lambda x: int(x) if x.strip() else ""
                 _f_r = lambda _cf_0: [
-                    list(map(_f_f, split_fixed_width(_l, _cf_0))) for _c in _e_c for _l in _c if _l
+                    list(map(_f_f, split_bywidth(_l, _cf_0)))
+                    for _c in _e_c
+                    for _l in _f_b(_c)
+                    if _l
                 ]
                 _f_u = lambda x: list(dict.fromkeys([_id for _id in x if _id]))
                 if _e_type in ["*ELEMENT_SOLID"]:
@@ -2078,9 +2082,9 @@ class bl_keyfile:
                     _cf_0 = self.__EntityCls_CardFields[_e_type][0]
                     if _e_type in ["*ELEMENT_SHELL_THICKNESS"]:
                         _f_r = lambda _cf_0: [
-                            list(map(_f_f, split_fixed_width(_l, _cf_0)))
+                            list(map(_f_f, split_bywidth(_l, _cf_0)))
                             for _c in _e_c
-                            for _l in _c[::2]
+                            for _l in _f_b(_c[::2])
                             if _l
                         ]
                     _elems = _f_r(_cf_0)
@@ -2097,9 +2101,9 @@ class bl_keyfile:
                     _cf_0 = self.__EntityCls_CardFields[_e_type][0]
                     if _e_type in ["*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"]:
                         _f_r = lambda _cf_0: [
-                            list(map(_f_f, split_fixed_width(_l, _cf_0)))
+                            list(map(_f_f, split_bywidth(_l, _cf_0)))
                             for _c in _e_c
-                            for _l in _c[::2]
+                            for _l in _f_b(_c[::2])
                             if _l
                         ]
                     _elems = _f_r(_cf_0)
@@ -2204,7 +2208,7 @@ class bl_keyfile:
                 _cf_1 = self.__EntityCls_CardFields["*PART"][1]
                 _f_f = lambda x: int(x) if x.strip() else ""
                 _parts = [
-                    _l.strip() if index % 2 == 0 else list(map(_f_f, split_fixed_width(_l, _cf_1)))
+                    _l.strip() if index % 2 == 0 else list(map(_f_f, split_bywidth(_l, _cf_1)))
                     for index, _l in enumerate([_l for _c in _p_c for _l in _c])
                     if _l
                 ]
@@ -2291,7 +2295,7 @@ class bl_keyfile:
                     card0 = [
                         func(var)
                         for var, func in zip(
-                            split_fixed_width(_c_c[0], _cf_0),
+                            split_bywidth(_c_c[0], _cf_0),
                             [lambda x: int(x) if x.strip() else ""] * 2
                             + [lambda x: float(x) if x.strip() else ""] * 4
                             + [lambda x: int(x) if x.strip() else ""] * 2,
@@ -2300,7 +2304,7 @@ class bl_keyfile:
                     if len(card0) < 8:
                         card0 += [""] * (8 - len(card0))
                     card1 = [
-                        list(map(float, split_fixed_width(_l, _cf_1, _param_mapping)))
+                        list(map(float, split_bywidth(_l, _cf_1, _param_mapping)))
                         for _l in _c_c[1:]
                         if _l
                     ]
@@ -2391,7 +2395,7 @@ class bl_keyfile:
                     card0 = [
                         func(var)
                         for var, func in zip(
-                            split_fixed_width(_c[0], _cf_0),
+                            split_bywidth(_c[0], _cf_0),
                             [lambda x: int(x) if x.strip() else ""]
                             + [lambda x: float(x) if x.strip() else ""] * 4
                             + [lambda x: str(x) if x.strip() else ""],
@@ -2399,7 +2403,7 @@ class bl_keyfile:
                     ]
                     if len(card0) < 6:
                         card0 += [""] * (6 - len(card0))
-                    card1 = [split_fixed_width(_l, _cf_1) for _l in _c[1:]]
+                    card1 = [split_bywidth(_l, _cf_1) for _l in _c[1:]]
                     _setslist.append([*card0, card1])
                 _setslist = pd.DataFrame(_setslist, columns=_d_c)
                 _setslist["keyword"] = _s_type.replace("_TITLE", "")
@@ -2618,33 +2622,3 @@ if __name__ == "__main__":
     )
     end = time.time()
     print(end - start)
-    _es = []
-
-    def __process_row(e):
-        _types = e.keyword.split("_", 1)[-1].lower()
-        _x_y_z, _size = e.get_centercoords(1)
-        _r_n = [o["obj"] for o in e.get_related_nodes()]
-        _l_r_n = len(_r_n)
-        _nodes = _r_n
-        if _l_r_n > 8 and _l_r_n in {10, 13, 15, 20}:
-            _nmap = {10: 4, 13: 5, 15: 6, 20: 8}
-            _nodes = _r_n[: _nmap[_l_r_n] + 1]
-        elif _l_r_n < 8 and "shell" in _types:
-            _nmap = {3: 3, 4: 4, 6: 3, 8: 4}
-            _nodes = _r_n[: _nmap[_l_r_n] + 1]
-        return [_types, _x_y_z, _size, _nodes]
-
-    for _kw, _df in tqdm(
-        j.elems.items(),
-        desc="PARSING:ELEMS ".ljust(30),
-        leave=True,
-        unit="",
-        bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
-    ):
-        _e = _df.loc[:, ["obj", "id", "id_nodes"]]
-        _e.rename(columns={"id_nodes": "nodes.id"}, inplace=True)
-        _e[["type", "x_y_z", "size", "nodes"]] = pd.DataFrame(
-            _e["obj"].apply(__process_row).tolist()
-        )
-        _e["nodes.x_y_z"] = _e["nodes"].apply(lambda x: [(i.x, i.y, i.z) for i in x])
-        _es.append(_e)
