@@ -1818,16 +1818,10 @@ class bl_keyfile:
         kw_ranges = [(star_lines[i], star_lines[i + 1]) for i in range(len(star_lines) - 1)]
         return kf_lines, kw_ranges
 
-    def read_kf(
-        self,
-        kfilepath,
-        kwinkf=0,
-        engine="bl",
-        preacc=1,
-    ):
+    def read_kf(self, kfilepath, kwinkf=0, engine="bl", preacc=1):
         if engine == "bl":
             with open(kfilepath, encoding=self.encoding) as file:
-                kf_lines = [line.upper() for line in file if line[0] != "$" and line not in ["\n"]]
+                kf_lines = [line.upper() for line in file if line[0] != "$"]
             if not kf_lines[0].startswith("*KEYWORD"):
                 raise ValueError("Missing *KEYWORD keyword")
             star_lines = [index for index, line in enumerate(kf_lines) if line[0] == "*"]
@@ -2210,7 +2204,6 @@ class bl_keyfile:
                 _parts = [
                     _l.strip() if index % 2 == 0 else list(map(_f_f, split_bywidth(_l, _cf_1)))
                     for index, _l in enumerate([_l for _c in _p_c for _l in _c])
-                    if _l
                 ]
                 parts = pd.DataFrame(_parts[::2], columns=["name"])
                 parts[["id", "id_sec", "id_mat"]] = pd.DataFrame([x[:3] for x in _parts[1::2]])
