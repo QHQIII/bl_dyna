@@ -313,16 +313,13 @@ EntityCls_PagmFields = {
         for k in ["*SET_NODE", "*SET_PART", "*SET_SHELL"]
         + ["*SET_NODE_LIST", "*SET_PART_LIST", "*SET_SHELL_LIST"]
     },
-    #
 }
 TopoClsMap = {
     "nodes": ["*NODE"],
-    #
     "elems": ["*ELEMENT_SOLID", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
     + ["*ELEMENT_BEAM", "*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"],
     "parts": ["*PART"],
     "define_curve": ["*DEFINE_CURVE"],
-    #
     "set_list": ["*SET_NODE", "*SET_PART", "*SET_SHELL"]
     + ["*SET_NODE_LIST", "*SET_PART_LIST", "*SET_SHELL_LIST"]
     + ["*SET_NODE_TITLE", "*SET_PART_TITLE", "*SET_SHELL_TITLE"]
@@ -353,9 +350,9 @@ def split_fixed_width(line, widths: list[int], replace_param: dict[str, str] = N
     if replace_param:
         _fields = []
         for s in fields:
-            for k, v in replace_param.items():
-                if s.strip() == "&" + k:
-                    s = s.replace("&" + k, v)
+            _p_s = s.strip()
+            if _p_s[0] == "&" and _p_s[1:] in replace_param.keys():
+                s = replace_param[_p_s[1:]]
             _fields.append(s)
         fields = _fields
     return fields
@@ -960,9 +957,15 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         self.__dict__["__is_inner__"] = True
         _rns = self.get_related_nodes()
         _rnd_c = [(n["x"], n["y"], n["z"]) for n in _rns]
-        _center = np.round(np.mean(_rnd_c, axis=0), 5)
+        _len = len(_rnd_c)
+        _center = (
+            round(sum([n["x"] for n in _rns]) / _len, 5),
+            round(sum([n["y"] for n in _rns]) / _len, 5),
+            round(sum([n["z"] for n in _rns]) / _len, 5),
+        )
         _dist = "平均边长未计算"
         if return_size:
+            _rnd_c = _rnd_c[:5]
             dist_matrix = distance.cdist(_rnd_c, _rnd_c, "euclidean")
             np.fill_diagonal(dist_matrix, np.nan)
             _dist = np.nanmean(dist_matrix)
@@ -1574,7 +1577,13 @@ class LsDyna_SET_LIST(__LsDyna_Base):
 
 class bl_keyfile:
     def __init__(
-        self, keyfile, parsing_topo=True, engine="bl", acc_initbythread=0, encoding="utf-8"
+        self,
+        keyfile,
+        parsing_topo=True,
+        is_init=1,
+        engine="bl",
+        acc_initbythread=0,
+        encoding="utf-8",
     ):
         self.__set_params()
         self.__set_fieldconfig()
@@ -1582,16 +1591,16 @@ class bl_keyfile:
             self.kfilepath = pathlib.Path(keyfile)
             self.encoding = encoding
             if parsing_topo:
-                self.parsing_topo = parsing_topo
+                self.__parsing_topo = parsing_topo
                 self.__acc_initbythread = acc_initbythread
                 self.__topocls_name__ = TopoClsMap
                 self.read_kf(self.kfilepath, engine=engine.lower())
                 self.collect_PARAMETER()
-                self.get_nodes()
-                self.get_elems()
-                self.get_parts()
-                self.get_define_curve()
-                self.get_set_list()
+                self.get_nodes(is_init=is_init)
+                self.get_elems(is_init=is_init)
+                self.get_parts(is_init=is_init)
+                self.get_define_curve(is_init=is_init)
+                self.get_set_list(is_init=is_init)
                 self.collect_portion_MAT()
                 self.collect_portion_SECTION()
             else:
@@ -1600,7 +1609,7 @@ class bl_keyfile:
 
     def __set_params(self):
         self.kfilepath = ""
-        self.parsing_topo = 0
+        self.__parsing_topo = 0
         self.__acc_initbythread = 0
         self.acc_filterbycache = 1
         self.__filtercache = {}
@@ -1656,10 +1665,10 @@ class bl_keyfile:
 
     def __repr__(self) -> str:
         lines = []
-        if self.parsing_topo:
+        if self.__parsing_topo:
             lines.append("LsDynaEntity with:")
             for each in sum(self.__topocls_name__.values(), []):
-                if each in self.keywords.keys() and not self.keywords[each].empty:
+                if each in self.keywords.keys():
                     lines.append(f"    {each}:".ljust(70) + f"{len(self.keywords[each])}")
         lines.append(f"  Entities:".ljust(70) + f"{len(self.keywords)}")
         lines.extend(
@@ -1677,28 +1686,26 @@ class bl_keyfile:
         data = []
         if hasattr(self, et_type):
             _dd = getattr(self, et_type)
-            for k, _df in _dd.items():
+            for _k, _df in _dd.items():
                 if not self.acc_filterbycache:
                     self.__filtercache = {}
-                _kn = et_type + k + field
-                if _kn not in self.__filtercache.keys():
+                if _k not in self.__filtercache.keys():
+                    self.__filtercache[_k] = _df.to_dict(orient="index")
+                _k_f = "_".join([_k, field])
+                if _k_f not in self.__filtercache.keys():
                     ix_map = defaultdict(list)
-                    for _ix, _r_ids in _df[field].to_dict().items():
-                        if isinstance(_df[field].iloc[0], (list, tuple, np.ndarray)):
+                    is_iterable = isinstance(_df[field].iloc[0], (list, tuple, np.ndarray))
+                    if is_iterable:
+                        for _ix, _r_ids in _df[field].to_dict().items():
                             for _r_id in _r_ids:
                                 ix_map[_r_id].append(_ix)
-                        else:
-                            ix_map[_r_ids].append(_ix)
-                    _ex_ix = ix_map.keys()
-                    _ex_dd = _df.to_dict(orient="index")
-                    self.__filtercache[_kn] = {
-                        "_ex_ia": ix_map,
-                        "_ex_ix": _ex_ix,
-                        "_ex_dd": _ex_dd,
-                    }
-                _ex_ia = self.__filtercache[_kn]["_ex_ia"]
-                _ex_ix = self.__filtercache[_kn]["_ex_ix"]
-                _ex_dd = self.__filtercache[_kn]["_ex_dd"]
+                    else:
+                        for _ix, _r_id in _df[field].to_dict().items():
+                            ix_map[_r_id].append(_ix)
+                    self.__filtercache[_k_f] = {"_ex_ia": ix_map, "_ex_ix": ix_map.keys()}
+                _ex_ia = self.__filtercache[_k_f]["_ex_ia"]
+                _ex_ix = self.__filtercache[_k_f]["_ex_ix"]
+                _ex_dd = self.__filtercache[_k]
                 _index = sum([_ex_ia[i] for i in ids if i in _ex_ix], [])
                 pick = [_ex_dd[i] for i in _index]
                 if pick:
@@ -1937,7 +1944,7 @@ class bl_keyfile:
         return [LsDyna_NODE(self, **row, keyword_settings=kw_settings) for row in batch_data]
 
     def get_nodes(self, node_cardlines: list | str = "", kw_type="*NODE", is_init=1):
-        self.parsing_topo = 1
+        self.__parsing_topo = 1
         self.__topocls_name__.update({"nodes": TopoClsMap["nodes"]})
         _all_cards = defaultdict(list)
         _d_c = ["id", "x", "y", "z"]
@@ -1982,22 +1989,23 @@ class bl_keyfile:
                 nodes_group_by_type[_n_type] = nodes
             ...
         if not node_cardlines:
-            for _n_type, v in nodes_group_by_type.items():
-                if _n_type in ["*NODE"]:
-                    data_dicts = v.to_dict(orient="records")
-                    if self.__acc_initbythread:
-                        _obj = self.__acc_initcls(
-                            kw_settings,
-                            data_dicts,
-                            func=self.__create_nodes_batch,
-                            bar_title=_n_type,
-                        )
-                    else:
-                        _obj = self.__create_nodes_batch(
-                            data_dicts, kw_settings, progress_bar=1, bar_title=_n_type
-                        )
-                    v["obj"] = _obj
-                    self.keywords[_n_type] = v
+            if is_init:
+                for _n_type, v in nodes_group_by_type.items():
+                    if _n_type in ["*NODE"]:
+                        data_dicts = v.to_dict(orient="records")
+                        if self.__acc_initbythread:
+                            _obj = self.__acc_initcls(
+                                kw_settings,
+                                data_dicts,
+                                func=self.__create_nodes_batch,
+                                bar_title=_n_type,
+                            )
+                        else:
+                            _obj = self.__create_nodes_batch(
+                                data_dicts, kw_settings, progress_bar=1, bar_title=_n_type
+                            )
+                        v["obj"] = _obj
+                        self.keywords[_n_type] = v
             self.nodes: dict[str, pd.DataFrame] = nodes_group_by_type
         else:
             return nodes_group_by_type[kw_type]
@@ -2013,8 +2021,8 @@ class bl_keyfile:
             )
         return [cls(self, **row, keyword_settings=kw_settings) for row in batch_data]
 
-    def get_elems(self, elem_cardlines: list | str = "", kw_type="*ELEMENT_SOLID"):
-        self.parsing_topo = 1
+    def get_elems(self, elem_cardlines: list | str = "", kw_type="*ELEMENT_SOLID", is_init=1):
+        self.__parsing_topo = 1
         self.__topocls_name__.update({"elems": TopoClsMap["elems"]})
         _all_cards = defaultdict(list)
         _d_c = ["id", "id_part", "id_nodes"]
@@ -2066,7 +2074,6 @@ class bl_keyfile:
                         )
                     elems["keyword"] = _e_type
                     elems["card_EX"] = ""
-                #
                 if _e_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
                     _cf_0 = self.__EntityCls_CardFields[_e_type][0]
                     if _e_type in ["*ELEMENT_SHELL_THICKNESS"]:
@@ -2082,7 +2089,6 @@ class bl_keyfile:
                     elems["card_EX"] = ""
                     if _e_type in ["*ELEMENT_SHELL_THICKNESS"]:
                         elems["card_EX"] = [_l for _c in _e_c for _l in _c[1::2]]
-                #
                 if _e_type in [
                     "*ELEMENT_BEAM",
                     "*ELEMENT_BEAM_OFFSET",
@@ -2113,57 +2119,59 @@ class bl_keyfile:
                 elems["id_nodes"] = elems["id_nodes"].apply(lambda x: [int(i) for i in x])
                 elems_group_by_type[_e_type] = elems
         if not elem_cardlines:
-            for _e_type, _e_c in elems_group_by_type.items():
-                if _e_type in [
-                    "*ELEMENT_SOLID",
-                    "*ELEMENT_SHELL",
-                    "*ELEMENT_SHELL_THICKNESS",
-                    "*ELEMENT_BEAM",
-                    "*ELEMENT_BEAM_OFFSET",
-                    "*ELEMENT_BEAM_ORIENTATION",
-                ]:
-                    if _e_type in ["*ELEMENT_SOLID"]:
-                        _f_i = lambda b, k, p=0: self.__create_elems_batch(
-                            cls=LsDyna_ELEMENT_SOLID,
-                            batch_data=b,
-                            kw_settings=k,
-                            progress_bar=p,
-                            bar_title=_e_type,
-                        )
-                    if _e_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
-                        _f_i = lambda b, k, p=0: self.__create_elems_batch(
-                            cls=LsDyna_ELEMENT_SHELL,
-                            batch_data=b,
-                            kw_settings=k,
-                            progress_bar=p,
-                            bar_title=_e_type,
-                        )
+            if is_init:
+                for _e_type, _e_c in elems_group_by_type.items():
                     if _e_type in [
+                        "*ELEMENT_SOLID",
+                        "*ELEMENT_SHELL",
+                        "*ELEMENT_SHELL_THICKNESS",
                         "*ELEMENT_BEAM",
                         "*ELEMENT_BEAM_OFFSET",
                         "*ELEMENT_BEAM_ORIENTATION",
                     ]:
-                        _f_i = lambda b, k, p=0: self.__create_elems_batch(
-                            cls=LsDyna_ELEMENT_BEAM,
-                            batch_data=b,
-                            kw_settings=k,
-                            progress_bar=p,
-                            bar_title=_e_type,
-                        )
-                    data_dicts = _e_c.to_dict(orient="records")
-                    if self.__acc_initbythread:
-                        _obj = self.__acc_initcls(kw_settings, data_dicts, _f_i, bar_title=_e_type)
-                    else:
-                        _obj = _f_i(data_dicts, kw_settings, 1)
-                    _e_c["obj"] = _obj
-                    self.keywords[_e_type] = _e_c
+                        if _e_type in ["*ELEMENT_SOLID"]:
+                            _f_i = lambda b, k, p=0: self.__create_elems_batch(
+                                cls=LsDyna_ELEMENT_SOLID,
+                                batch_data=b,
+                                kw_settings=k,
+                                progress_bar=p,
+                                bar_title=_e_type,
+                            )
+                        if _e_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
+                            _f_i = lambda b, k, p=0: self.__create_elems_batch(
+                                cls=LsDyna_ELEMENT_SHELL,
+                                batch_data=b,
+                                kw_settings=k,
+                                progress_bar=p,
+                                bar_title=_e_type,
+                            )
+                        if _e_type in [
+                            "*ELEMENT_BEAM",
+                            "*ELEMENT_BEAM_OFFSET",
+                            "*ELEMENT_BEAM_ORIENTATION",
+                        ]:
+                            _f_i = lambda b, k, p=0: self.__create_elems_batch(
+                                cls=LsDyna_ELEMENT_BEAM,
+                                batch_data=b,
+                                kw_settings=k,
+                                progress_bar=p,
+                                bar_title=_e_type,
+                            )
+                        data_dicts = _e_c.to_dict(orient="records")
+                        if self.__acc_initbythread:
+                            _obj = self.__acc_initcls(
+                                kw_settings, data_dicts, _f_i, bar_title=_e_type
+                            )
+                        else:
+                            _obj = _f_i(data_dicts, kw_settings, 1)
+                        _e_c["obj"] = _obj
+                        self.keywords[_e_type] = _e_c
             self.elems: dict[str, pd.DataFrame] = elems_group_by_type
         else:
             return elems_group_by_type[kw_type]
 
-    def get_parts(self, part_cardlines: list | str = "", kw_type="*PART"):
-        #
-        self.parsing_topo = 1
+    def get_parts(self, part_cardlines: list | str = "", kw_type="*PART", is_init=1):
+        self.__parsing_topo = 1
         self.__topocls_name__.update({"parts": TopoClsMap["parts"]})
         _all_cards = defaultdict(list)
         _d_c = ["id", "name", "id_sec", "id_mat", "card2_add_fields"]
@@ -2221,29 +2229,29 @@ class bl_keyfile:
                 parts_group_by_type[_p_type] = parts
             ...
         if not part_cardlines:
-            for _p_type, _p_c in parts_group_by_type.items():
-                if _p_type in ["*PART"]:
-                    data_dicts = _p_c.to_dict(orient="records")
-                    _p_c["obj"] = [
-                        LsDyna_PART(self, **row, keyword_settings=kw_settings)
-                        for row in tqdm(
-                            data_dicts,
-                            desc=f"    {_p_type} ".ljust(30),
-                            leave=True,
-                            unit="",
-                            bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
-                        )
-                    ]
-                    self.keywords[_p_type] = _p_c
+            if is_init:
+                for _p_type, _p_c in parts_group_by_type.items():
+                    if _p_type in ["*PART"]:
+                        data_dicts = _p_c.to_dict(orient="records")
+                        _p_c["obj"] = [
+                            LsDyna_PART(self, **row, keyword_settings=kw_settings)
+                            for row in tqdm(
+                                data_dicts,
+                                desc=f"    {_p_type} ".ljust(30),
+                                leave=True,
+                                unit="",
+                                bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                            )
+                        ]
+                        self.keywords[_p_type] = _p_c
             self.parts: pd.DataFrame = parts_group_by_type
         else:
             return parts_group_by_type[kw_type]
 
     def get_define_curve(
-        self, curve_cardlines: list | str = "", kw_type="*DEFINE_CURVE", replace_param=1
+        self, curve_cardlines: list | str = "", kw_type="*DEFINE_CURVE", is_init=1, replace_param=1
     ):
-        #
-        self.parsing_topo = 1
+        self.__parsing_topo = 1
         self.__topocls_name__.update({"define_curve": TopoClsMap["define_curve"]})
         _all_cards = defaultdict(list)
         _d_c = ["id", "sidr", "sfa", "sfo", "offa", "offo", "dattyp", "lcint", "x", "y"]
@@ -2313,27 +2321,27 @@ class bl_keyfile:
                 curves_group_by_type[_c_type] = curves
             ...
         if not curve_cardlines:
-            for _c_type, v in curves_group_by_type.items():
-                if _c_type in ["*DEFINE_CURVE"]:
-                    data_dicts = v.to_dict(orient="records")
-                    v["obj"] = [
-                        LsDyna_DEFINE_CURVE(self, **row, keyword_settings=kw_settings)
-                        for row in tqdm(
-                            data_dicts,
-                            desc=f"    {_c_type} ".ljust(30),
-                            leave=True,
-                            unit="",
-                            bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
-                        )
-                    ]
-                    self.keywords[_c_type] = v
+            if is_init:
+                for _c_type, v in curves_group_by_type.items():
+                    if _c_type in ["*DEFINE_CURVE"]:
+                        data_dicts = v.to_dict(orient="records")
+                        v["obj"] = [
+                            LsDyna_DEFINE_CURVE(self, **row, keyword_settings=kw_settings)
+                            for row in tqdm(
+                                data_dicts,
+                                desc=f"    {_c_type} ".ljust(30),
+                                leave=True,
+                                unit="",
+                                bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                            )
+                        ]
+                        self.keywords[_c_type] = v
             self.curves: pd.DataFrame = curves_group_by_type
         else:
             return curves_group_by_type[kw_type]
 
-    def get_set_list(self, set_cardlines: list | str = "", kw_type="*SET_NODE_LIST"):
-        #
-        self.parsing_topo = 1
+    def get_set_list(self, set_cardlines: list | str = "", kw_type="*SET_NODE_LIST", is_init=1):
+        self.__parsing_topo = 1
         self.__topocls_name__.update({"set_list": TopoClsMap["set_list"]})
         _all_cards = defaultdict(list)
         _d_c = ["id", "da1", "da2", "da3", "da4", "solver", "nids"]
@@ -2403,33 +2411,34 @@ class bl_keyfile:
                 sets_group_by_type[_s_type] = _setslist
             ...
         if not set_cardlines:
-            for _s_type, v in sets_group_by_type.items():
-                if _s_type in [
-                    "*SET_NODE",
-                    "*SET_NODE_LIST",
-                    "*SET_PART",
-                    "*SET_PART_LIST",
-                    "*SET_SHELL",
-                    "*SET_SHELL_LIST",
-                    "*SET_NODE_TITLE",
-                    "*SET_PART_TITLE",
-                    "*SET_SHELL_TITLE",
-                    "*SET_NODE_LIST_TITLE",
-                    "*SET_PART_LIST_TITLE",
-                    "*SET_SHELL_LIST_TITLE",
-                ]:
-                    data_dicts = v.to_dict(orient="records")
-                    v["obj"] = [
-                        LsDyna_SET_LIST(self, **row, keyword_settings=kw_settings)
-                        for row in tqdm(
-                            data_dicts,
-                            desc=f"    {_s_type} ".ljust(30),
-                            leave=True,
-                            unit="",
-                            bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
-                        )
-                    ]
-                    self.keywords[_s_type] = v
+            if is_init:
+                for _s_type, v in sets_group_by_type.items():
+                    if _s_type in [
+                        "*SET_NODE",
+                        "*SET_NODE_LIST",
+                        "*SET_PART",
+                        "*SET_PART_LIST",
+                        "*SET_SHELL",
+                        "*SET_SHELL_LIST",
+                        "*SET_NODE_TITLE",
+                        "*SET_PART_TITLE",
+                        "*SET_SHELL_TITLE",
+                        "*SET_NODE_LIST_TITLE",
+                        "*SET_PART_LIST_TITLE",
+                        "*SET_SHELL_LIST_TITLE",
+                    ]:
+                        data_dicts = v.to_dict(orient="records")
+                        v["obj"] = [
+                            LsDyna_SET_LIST(self, **row, keyword_settings=kw_settings)
+                            for row in tqdm(
+                                data_dicts,
+                                desc=f"    {_s_type} ".ljust(30),
+                                leave=True,
+                                unit="",
+                                bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                            )
+                        ]
+                        self.keywords[_s_type] = v
             self.sets: dict[str, pd.DataFrame] = sets_group_by_type
         else:
             return sets_group_by_type[kw_type]
@@ -2545,11 +2554,10 @@ class bl_keyfile:
 
     def save_kf(self, path):
         with open(path, "w") as file:
-            if self.parsing_topo:
+            if self.__parsing_topo:
                 passed_k = []
-                _k = []
-                for v in self.__ori_kw_order:
-                    k = v.keyword
+                for _kw_e in self.__ori_kw_order:
+                    k = _kw_e.keyword
                     if k in sum(
                         [
                             self.__topocls_name__[x]
@@ -2558,13 +2566,18 @@ class bl_keyfile:
                         ],
                         [],
                     ):
-                        if k not in passed_k:
-                            kwobj_container = self.keywords[k]["obj"]
-                            file.write(k + " " + kwobj_container.iloc[0].keyword_settings + "\n")
-                            for each in kwobj_container:
-                                file.write(each.str_cardsonly)
+                        if isinstance(self.keywords[k], pd.DataFrame):
+                            if k not in passed_k:
+                                kwobj_container = self.keywords[k]["obj"]
+                                file.write(
+                                    k + " " + kwobj_container.iloc[0].keyword_settings + "\n"
+                                )
+                                for each in kwobj_container:
+                                    file.write(each.str_cardsonly)
+                            else:
+                                continue
                         else:
-                            continue
+                            file.write(_kw_e.str)
                     elif k in sum(
                         [
                             self.__topocls_name__[x]
@@ -2573,30 +2586,65 @@ class bl_keyfile:
                         ],
                         [],
                     ):
-                        if k not in passed_k:
-                            for each in self.keywords[k]["obj"]:
-                                file.write(each.str)
+                        if isinstance(self.keywords[k], pd.DataFrame):
+                            if k not in passed_k:
+                                for each in self.keywords[k]["obj"]:
+                                    file.write(each.str)
+                            else:
+                                continue
                         else:
-                            continue
+                            file.write(_kw_e.str)
                     elif k in self.__include_kw:
                         pass
                     else:
-                        file.write(v.str)
+                        file.write(_kw_e.str)
                     passed_k.append(k)
             else:
-                for v in self.__ori_kw_order:
-                    k = v.keyword
+                for _kw_e in self.__ori_kw_order:
+                    k = _kw_e.keyword
                     if k in self.__include_kw:
                         pass
                     else:
-                        file.write(v.str)
+                        file.write(_kw_e.str)
         return path
 
 
 if __name__ == "__main__":
-    import time
+    import time, cProfile, pstats
 
     start = time.time()
-    j = bl_keyfile(r"C:\Users\breez\Desktop\kf\k\0.k", parsing_topo=1, acc_initbythread=0)
+    j = bl_keyfile(
+        r"C:\Users\breez\Desktop\kf\k\0.k", parsing_topo=1, is_init=1, acc_initbythread=0
+    )
     end = time.time()
     print(end - start)
+    _es = []
+
+    def __process_row(e):
+        _types = e.keyword.split("_", 1)[-1].lower()
+        _x_y_z, _size = e.get_centercoords(1)
+        _r_n = [o["obj"] for o in e.get_related_nodes()]
+        _l_r_n = len(_r_n)
+        _nodes = _r_n
+        if _l_r_n > 8 and _l_r_n in {10, 13, 15, 20}:
+            _nmap = {10: 4, 13: 5, 15: 6, 20: 8}
+            _nodes = _r_n[: _nmap[_l_r_n] + 1]
+        elif _l_r_n < 8 and "shell" in _types:
+            _nmap = {3: 3, 4: 4, 6: 3, 8: 4}
+            _nodes = _r_n[: _nmap[_l_r_n] + 1]
+        return [_types, _x_y_z, _size, _nodes]
+
+    for _kw, _df in tqdm(
+        j.elems.items(),
+        desc="PARSING:ELEMS ".ljust(30),
+        leave=True,
+        unit="",
+        bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+    ):
+        _e = _df.loc[:, ["obj", "id", "id_nodes"]]
+        _e.rename(columns={"id_nodes": "nodes.id"}, inplace=True)
+        _e[["type", "x_y_z", "size", "nodes"]] = pd.DataFrame(
+            _e["obj"].apply(__process_row).tolist()
+        )
+        _e["nodes.x_y_z"] = _e["nodes"].apply(lambda x: [(i.x, i.y, i.z) for i in x])
+        _es.append(_e)
