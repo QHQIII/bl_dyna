@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.spatial import distance
-import pathlib, copy
+import pathlib, copy, math
 from types import MappingProxyType
 from collections import defaultdict
 from itertools import groupby
@@ -50,6 +50,7 @@ EntityCls_CardFields = {
     **{
         "*NODE": [[8, 16, 16, 16, 8, 8]],
         "*ELEMENT_SOLID": [[8] * 10, [8] * 10],
+        "*ELEMENT_SOLID_H20": [[8] * 10, [8] * 10, [8] * 10],
         "*ELEMENT_SHELL": [[8] * 10],
         "*ELEMENT_SHELL_THICKNESS": [[8] * 10],
         "*ELEMENT_BEAM": [[8] * 10],
@@ -207,14 +208,13 @@ EntityCls_PagmFields = {
         "*ELEMENT_SOLID": {
             "ID": {"index": ["0::2", 0], "format": "", "info": "ID"},
             "PID": {"index": ["0::2", 1], "format": "", "info": "PART ID"},
-            "N1": {"index": ["1::2", 0], "format": "", "info": "节点1"},
-            "N2": {"index": ["1::2", 1], "format": "", "info": "节点2"},
-            "N3": {"index": ["1::2", 2], "format": "", "info": "节点3"},
-            "N4": {"index": ["1::2", 3], "format": "", "info": "节点4"},
-            "N5": {"index": ["1::2", 4], "format": "", "info": "节点5"},
-            "N6": {"index": ["1::2", 5], "format": "", "info": "节点6"},
-            "N7": {"index": ["1::2", 6], "format": "", "info": "节点7"},
-            "N8": {"index": ["1::2", 7], "format": "", "info": "节点8"},
+            "NIDS1": {"index": ["1::2", "2:"], "format": "", "info": "节点"},
+        },
+        "*ELEMENT_SOLID_H20": {
+            "ID": {"index": ["0::3", 0], "format": "", "info": "ID"},
+            "PID": {"index": ["0::3", 1], "format": "", "info": "PART ID"},
+            "NIDS1": {"index": ["1::3", "2:"], "format": "", "info": "节点组1"},
+            "NIDS2": {"index": ["2::3", "2:"], "format": "", "info": "节点组2"},
         },
         "*ELEMENT_SHELL": {
             "ID": {"index": [":", 0], "format": "", "info": "ID"},
@@ -316,7 +316,7 @@ EntityCls_PagmFields = {
 }
 TopoClsMap = {
     "nodes": ["*NODE"],
-    "elems": ["*ELEMENT_SOLID", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
+    "elems": ["*ELEMENT_SOLID", "ELEMENT_SOLID_H20", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
     + ["*ELEMENT_BEAM", "*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"],
     "parts": ["*PART"],
     "define_curve": ["*DEFINE_CURVE"],
@@ -330,7 +330,7 @@ TopoClsMap = {
 def reshape_list(ids: list = [0], _f_W: int = 10, _m_l: int = 80):
     _f_n = int(_m_l / _f_W)
     res = []
-    for i in range(int(np.ceil(len(ids) / (_f_n)))):
+    for i in range(int(math.ceil(len(ids) / (_f_n)))):
         res.append([each for each in ids[i * _f_n : (i + 1) * _f_n]])
     return res
 
@@ -934,15 +934,26 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
 
     def reshape_nodes(self, id_nodes):
         self.__dict__["__is_inner__"] = True
-        _l_in = len(self.id_nodes)
         self.__id_nodes__ = self.id_nodes
-        if "SOLID" in self.keyword:
-            if _l_in < 6:
-                self.__id_nodes__ = self.id_nodes + [self.id_nodes[-1]] * (8 - _l_in)
-            elif _l_in == 6:
+        _l_in = len(self.id_nodes)
+        if _l_in < 6:
+            if "SOLID" in self.keyword:
+                _nmap = {4: 4, 5: 3}
+                self.__id_nodes__ = self.__id_nodes__ + [self.__id_nodes__[-1]] * (8 - _nmap[_l_in])
+        elif _l_in == 6:
+            if "SOLID" in self.keyword:
+                _i_m = self.id_nodes[:8]
                 self.__id_nodes__ = (
-                    self.id_nodes[:4] + [self.id_nodes[4]] * 2 + [self.id_nodes[5]] * 2
+                    self.__id_nodes__[:4] + [self.__id_nodes__[4]] * 2 + [self.__id_nodes__[5]] * 2
                 )
+        elif _l_in == 13:
+            _i_m = self.id_nodes[:7]
+            self.__id_nodes__ = _i_m[:4] + [_i_m[4]] * 3 + _i_m[5:7]
+        elif _l_in == 15:
+            _i_m = self.id_nodes[:8]
+            self.__id_nodes__ = _i_m[:4] + [_i_m[4]] * 2 + [_i_m[5]] * 2 + _i_m[6:8]
+        elif _l_in == 20:
+            self.__id_nodes__ = self.__id_nodes__[:10]
         self.__dict__["__is_inner__"] = False
 
     def get_related_nodes(self, return_asdf=0):
@@ -965,9 +976,13 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         )
         _dist = "平均边长未计算"
         if return_size:
-            _rnd_c = _rnd_c[:5]
-            dist_matrix = distance.cdist(_rnd_c, _rnd_c, "euclidean")
-            _dist = np.mean(dist_matrix[dist_matrix != 0])
+            _f_dist = lambda a, b: math.sqrt(
+                (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+            )
+            if _len == 2:
+                _dist = _f_dist(_rnd_c[0], _rnd_c[1])
+            else:
+                _dist = (_f_dist(_rnd_c[0], _rnd_c[1]) + _f_dist(_rnd_c[0], _rnd_c[-2])) / 2
         self.__dict__["__is_inner__"] = False
         return _center, _dist
 
@@ -986,8 +1001,11 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         centercoords = self.get_centercoords(1)
         if centercoords:
             lines.append(f"  Coords:".ljust(10) + f"{centercoords}")
-        lines.append(f"  Nodes:".ljust(10) + f"{len(self.__id_nodes__)}")
-        lines.append(f"    ids:".ljust(10) + f"{self.__id_nodes__}")
+        _l_e_n = len(self.id_nodes)
+        lines.append(f"  Nodes:".ljust(10) + f"{_l_e_n}") + (
+            f"with {_l_e_n-8} mid nodes" if _l_e_n > 8 else f""
+        )
+        lines.append(f"    ids:".ljust(10) + f"{self.id_nodes}")
         lines.append(f"  partid:".ljust(10) + f"{self.id_part}")
         self.__dict__["__is_inner__"] = False
         return "\n".join(lines)
@@ -1726,14 +1744,7 @@ class bl_keyfile:
             self.__EntityCls_PagmFields["*ELEMENT_SOLID"] = {
                 "ID": {"index": [":", 0], "format": "", "info": "ID"},
                 "PID": {"index": [":", 1], "format": "", "info": "PART ID"},
-                "N1": {"index": [":", 2], "format": "", "info": "节点1"},
-                "N2": {"index": [":", 3], "format": "", "info": "节点2"},
-                "N3": {"index": [":", 4], "format": "", "info": "节点3"},
-                "N4": {"index": [":", 5], "format": "", "info": "节点4"},
-                "N5": {"index": [":", 6], "format": "", "info": "节点5"},
-                "N6": {"index": [":", 7], "format": "", "info": "节点6"},
-                "N7": {"index": [":", 8], "format": "", "info": "节点7"},
-                "N8": {"index": [":", 9], "format": "", "info": "节点8"},
+                "NIDS1": {"index": [":", "2:"], "format": "", "info": "节点"},
             }
         if kw_title.endswith("_TITLE") and kw_title not in self.__EntityCls_CardFields.keys():
             _t_ref = kw_title.replace("_TITLE", "")
@@ -1931,14 +1942,14 @@ class bl_keyfile:
         _d_c = ["id", "x", "y", "z"]
         kw_settings = ""
         if not node_cardlines:
-            for _n_type in self.__topocls_name__["nodes"]:
-                if _n_type in self.keywords:
+            for _kw_type in self.__topocls_name__["nodes"]:
+                if _kw_type in self.keywords:
                     node_cards = []
-                    for _n in self.keywords[_n_type]:
+                    for _n in self.keywords[_kw_type]:
                         node_cards.append(_n.cards)
                         if len(_n.keyword_settings) > len(kw_settings):
                             kw_settings = _n.keyword_settings
-                    _all_cards[_n_type] = node_cards
+                    _all_cards[_kw_type] = node_cards
             if not _all_cards:
                 self.nodes = pd.DataFrame(columns=_d_c + ["obj"])
                 return
@@ -1949,56 +1960,63 @@ class bl_keyfile:
                 node_cards = [node_cardlines]
             _all_cards[kw_type] = node_cards
             kw_settings = ""
-        nodes_group_by_type = {}
-        for _n_type, v in _all_cards.items():
-            if _n_type in ["*NODE"]:
+        _group_by_type = {}
+        for _kw_type, _kw_c in _all_cards.items():
+            if _kw_type in ["*NODE"]:
                 _cf_0 = self.__EntityCls_CardFields["*NODE"][0]
                 _f_b = lambda x: tqdm(
                     x,
-                    desc=f"    {_n_type} ".ljust(30),
+                    desc=f"    {_kw_type} ".ljust(30),
                     leave=False,
                     unit="",
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
                 )
                 _f_f = lambda x: x if x.strip() else ""
                 _nodes = [
-                    list(map(_f_f, split_bywidth(_l, _cf_0))) for _c in v for _l in _f_b(_c) if _l
+                    list(map(_f_f, split_bywidth(_l, _cf_0)))
+                    for _c in _kw_c
+                    for _l in _f_b(_c)
+                    if _l
                 ]
                 nodes = pd.DataFrame([n[:4] for n in _nodes], columns=_d_c)
                 nodes["card1_add_fields"] = [
                     {key: vars for key, vars in zip(["TC", "RC"], each)}
                     for each in [x[4:] for x in _nodes]
                 ]
-                nodes["keyword"] = _n_type
+                nodes["keyword"] = _kw_type
                 nodes["card_EX"] = ""
                 nodes = nodes.astype(
                     dtype={"id": "int32", "x": "float64", "y": "float64", "z": "float64"},
                 )
-                nodes_group_by_type[_n_type] = nodes
-        for _n_type, v in nodes_group_by_type.items():
-            if v.duplicated(subset=["id"]).any():
-                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_n_type}")
+                _group_by_type[_kw_type] = nodes
+            ...
+        for _kw_type, _kw_c in _group_by_type.items():
+            if _kw_c.duplicated(subset=["id"]).any():
+                print(
+                    f"Warning: {_kw_c.duplicated(subset=['id']).sum()} duplicated ID in {_kw_type}"
+                )
+            ...
         if not node_cardlines:
             if is_init:
-                for _n_type, v in nodes_group_by_type.items():
-                    if _n_type in ["*NODE"]:
-                        data_dicts = v.to_dict(orient="records")
+                for _kw_type, _kw_c in _group_by_type.items():
+                    if _kw_type in ["*NODE"]:
+                        data_dicts = _kw_c.to_dict(orient="records")
                         if self.__acc_initbythread:
                             _obj = self.__acc_initcls(
                                 kw_settings,
                                 data_dicts,
                                 func=self.__create_nodes_batch,
-                                bar_title=_n_type,
+                                bar_title=_kw_type,
                             )
                         else:
                             _obj = self.__create_nodes_batch(
-                                data_dicts, kw_settings, progress_bar=1, bar_title=_n_type
+                                data_dicts, kw_settings, progress_bar=1, bar_title=_kw_type
                             )
-                        v["obj"] = _obj
-                        self.keywords[_n_type] = v
-            self.nodes: dict[str, pd.DataFrame] = nodes_group_by_type
+                        _kw_c["obj"] = _obj
+                        self.keywords[_kw_type] = _kw_c
+            self.nodes: dict[str, pd.DataFrame] = _group_by_type
         else:
-            return nodes_group_by_type[kw_type]
+            return _group_by_type[kw_type]
 
     def __create_elems_batch(self, cls, batch_data, kw_settings, progress_bar=0, bar_title=""):
         if progress_bar:
@@ -2018,14 +2036,14 @@ class bl_keyfile:
         _d_c = ["id", "id_part", "id_nodes"]
         kw_settings = ""
         if not elem_cardlines:
-            for _e_type in self.__topocls_name__["elems"]:
-                if _e_type in self.keywords:
+            for _kw_type in self.__topocls_name__["elems"]:
+                if _kw_type in self.keywords:
                     elem_cards = []
-                    for _f_r in self.keywords[_e_type]:
+                    for _f_r in self.keywords[_kw_type]:
                         elem_cards.append(_f_r.cards)
                         if len(_f_r.keyword_settings) > len(kw_settings):
                             kw_settings = _f_r.keyword_settings
-                    _all_cards[_e_type] = elem_cards
+                    _all_cards[_kw_type] = elem_cards
             if not _all_cards:
                 self.elems = pd.DataFrame(columns=_d_c)
                 return
@@ -2036,10 +2054,11 @@ class bl_keyfile:
                 elem_cards = [elem_cardlines]
             _all_cards[kw_type] = elem_cards
             kw_settings = ""
-        elems_group_by_type = {}
-        for _e_type, _e_c in _all_cards.items():
-            if _e_type in [
+        _group_by_type = {}
+        for _kw_type, _kw_c in _all_cards.items():
+            if _kw_type in [
                 "*ELEMENT_SOLID",
+                "*ELEMENT_SOLID_H20",
                 "*ELEMENT_SHELL",
                 "*ELEMENT_SHELL_THICKNESS",
                 "*ELEMENT_BEAM",
@@ -2048,7 +2067,7 @@ class bl_keyfile:
             ]:
                 _f_b = lambda x: tqdm(
                     x,
-                    desc=f"    {_e_type} ".ljust(30),
+                    desc=f"    {_kw_type} ".ljust(30),
                     leave=False,
                     unit="",
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
@@ -2056,13 +2075,13 @@ class bl_keyfile:
                 _f_f = lambda x: int(x) if x.strip() else ""
                 _f_r = lambda _cf_0: [
                     list(map(_f_f, split_bywidth(_l, _cf_0)))
-                    for _c in _e_c
+                    for _c in _kw_c
                     for _l in _f_b(_c)
                     if _l
                 ]
                 _f_u = lambda x: list(dict.fromkeys([_id for _id in x if _id]))
-                if _e_type in ["*ELEMENT_SOLID"]:
-                    _cf_0 = self.__EntityCls_CardFields[_e_type][1]
+                if _kw_type in ["*ELEMENT_SOLID"]:
+                    _cf_0 = self.__EntityCls_CardFields[_kw_type][1]
                     _elems = _f_r(_cf_0)
                     try:
                         elems = pd.DataFrame(_elems[::2], columns=["id", "id_part"]).join(
@@ -2072,33 +2091,42 @@ class bl_keyfile:
                         elems = pd.DataFrame(
                             [[x[0], x[1], _f_u(x[2:])] for x in _elems], columns=_d_c
                         )
-                    elems["keyword"] = _e_type
+                    elems["keyword"] = _kw_type
                     elems["card_EX"] = ""
-                if _e_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
-                    _cf_0 = self.__EntityCls_CardFields[_e_type][0]
-                    if _e_type in ["*ELEMENT_SHELL_THICKNESS"]:
+                if _kw_type in ["*ELEMENT_SOLID_H20"]:
+                    _cf_0 = self.__EntityCls_CardFields[_kw_type][1]
+                    _elems = _f_r(_cf_0)
+                    elems = pd.DataFrame(_elems[::3], columns=["id", "id_part"])
+                    elems["id_nodes"] = [
+                        _f_u(i) for i in [x for ix, x in enumerate(_elems) if ix % 3]
+                    ]
+                    elems["keyword"] = _kw_type
+                    elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
+                if _kw_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
+                    _cf_0 = self.__EntityCls_CardFields[_kw_type][0]
+                    if _kw_type in ["*ELEMENT_SHELL_THICKNESS"]:
                         _f_r = lambda _cf_0: [
                             list(map(_f_f, split_bywidth(_l, _cf_0)))
-                            for _c in _e_c
+                            for _c in _kw_c
                             for _l in _f_b(_c[::2])
                             if _l
                         ]
                     _elems = _f_r(_cf_0)
                     elems = pd.DataFrame([[x[0], x[1], _f_u(x[2:])] for x in _elems], columns=_d_c)
-                    elems["keyword"] = _e_type
+                    elems["keyword"] = _kw_type
                     elems["card_EX"] = ""
-                    if _e_type in ["*ELEMENT_SHELL_THICKNESS"]:
-                        elems["card_EX"] = [_l for _c in _e_c for _l in _c[1::2]]
-                if _e_type in [
+                    if _kw_type in ["*ELEMENT_SHELL_THICKNESS"]:
+                        elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
+                if _kw_type in [
                     "*ELEMENT_BEAM",
                     "*ELEMENT_BEAM_OFFSET",
                     "*ELEMENT_BEAM_ORIENTATION",
                 ]:
-                    _cf_0 = self.__EntityCls_CardFields[_e_type][0]
-                    if _e_type in ["*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"]:
+                    _cf_0 = self.__EntityCls_CardFields[_kw_type][0]
+                    if _kw_type in ["*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"]:
                         _f_r = lambda _cf_0: [
                             list(map(_f_f, split_bywidth(_l, _cf_0)))
-                            for _c in _e_c
+                            for _c in _kw_c
                             for _l in _f_b(_c[::2])
                             if _l
                         ]
@@ -2111,44 +2139,51 @@ class bl_keyfile:
                         }
                         for each in [x[4:] for x in _elems]
                     ]
-                    elems["keyword"] = _e_type
+                    elems["keyword"] = _kw_type
                     elems["card_EX"] = ""
-                    if _e_type in ["*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"]:
-                        elems["card_EX"] = [_l for _c in _e_c for _l in _c[1::2]]
+                    if _kw_type in ["*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"]:
+                        elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
                 elems = elems.astype(dtype={"id": "int32", "id_part": "int32"})
                 elems["id_nodes"] = elems["id_nodes"].apply(lambda x: [int(i) for i in x])
-                elems_group_by_type[_e_type] = elems
-        for _e_type, v in elems_group_by_type.items():
-            if v.duplicated(subset=["id"]).any():
-                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_e_type}")
+                _group_by_type[_kw_type] = elems
+        for _kw_type, _kw_c in _group_by_type.items():
+            if _kw_c.duplicated(subset=["id"]).any():
+                print(
+                    f"Warning: {_kw_c.duplicated(subset=['id']).sum()} duplicated ID in {_kw_type}"
+                )
+            ...
         if not elem_cardlines:
             if is_init:
-                for _e_type, _e_c in elems_group_by_type.items():
-                    if _e_type in [
+                for _kw_type, _kw_c in _group_by_type.items():
+                    if _kw_type in [
                         "*ELEMENT_SOLID",
+                        "*ELEMENT_SOLID_H20",
                         "*ELEMENT_SHELL",
                         "*ELEMENT_SHELL_THICKNESS",
                         "*ELEMENT_BEAM",
                         "*ELEMENT_BEAM_OFFSET",
                         "*ELEMENT_BEAM_ORIENTATION",
                     ]:
-                        if _e_type in ["*ELEMENT_SOLID"]:
+                        if _kw_type in [
+                            "*ELEMENT_SOLID",
+                            "*ELEMENT_SOLID_H20",
+                        ]:
                             _f_i = lambda b, k, p=0: self.__create_elems_batch(
                                 cls=LsDyna_ELEMENT_SOLID,
                                 batch_data=b,
                                 kw_settings=k,
                                 progress_bar=p,
-                                bar_title=_e_type,
+                                bar_title=_kw_type,
                             )
-                        if _e_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
+                        if _kw_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
                             _f_i = lambda b, k, p=0: self.__create_elems_batch(
                                 cls=LsDyna_ELEMENT_SHELL,
                                 batch_data=b,
                                 kw_settings=k,
                                 progress_bar=p,
-                                bar_title=_e_type,
+                                bar_title=_kw_type,
                             )
-                        if _e_type in [
+                        if _kw_type in [
                             "*ELEMENT_BEAM",
                             "*ELEMENT_BEAM_OFFSET",
                             "*ELEMENT_BEAM_ORIENTATION",
@@ -2158,20 +2193,20 @@ class bl_keyfile:
                                 batch_data=b,
                                 kw_settings=k,
                                 progress_bar=p,
-                                bar_title=_e_type,
+                                bar_title=_kw_type,
                             )
-                        data_dicts = _e_c.to_dict(orient="records")
+                        data_dicts = _kw_c.to_dict(orient="records")
                         if self.__acc_initbythread:
                             _obj = self.__acc_initcls(
-                                kw_settings, data_dicts, _f_i, bar_title=_e_type
+                                kw_settings, data_dicts, _f_i, bar_title=_kw_type
                             )
                         else:
                             _obj = _f_i(data_dicts, kw_settings, 1)
-                        _e_c["obj"] = _obj
-                        self.keywords[_e_type] = _e_c
-            self.elems: dict[str, pd.DataFrame] = elems_group_by_type
+                        _kw_c["obj"] = _obj
+                        self.keywords[_kw_type] = _kw_c
+            self.elems: dict[str, pd.DataFrame] = _group_by_type
         else:
-            return elems_group_by_type[kw_type]
+            return _group_by_type[kw_type]
 
     def get_parts(self, part_cardlines: list | str = "", kw_type="*PART", is_init=1):
         self.__parsing_topo = 1
@@ -2180,14 +2215,14 @@ class bl_keyfile:
         _d_c = ["id", "name", "id_sec", "id_mat", "card2_add_fields"]
         kw_settings = ""
         if not part_cardlines:
-            for _p_type in self.__topocls_name__["parts"]:
-                if _p_type in self.keywords:
+            for _kw_type in self.__topocls_name__["parts"]:
+                if _kw_type in self.keywords:
                     part_cards = []
-                    for _p in self.keywords[_p_type]:
+                    for _p in self.keywords[_kw_type]:
                         part_cards.append(_p.cards)
                         if len(_p.keyword_settings) > len(kw_settings):
                             kw_settings = _p.keyword_settings
-                    _all_cards[_p_type] = part_cards
+                    _all_cards[_kw_type] = part_cards
             if not _all_cards:
                 self.parts = pd.DataFrame(columns=_d_c + ["obj"]).astype(
                     dtype={"id": "int32", "id_sec": "int32", "id_mat": "int32"}
@@ -2200,15 +2235,15 @@ class bl_keyfile:
                 part_cards = [part_cardlines]
             _all_cards[kw_type] = part_cards
             kw_settings = ""
-        parts_group_by_type = {}
-        for _p_type, _p_c in _all_cards.items():
-            if _p_type in ["*PART"]:
+        _group_by_type = {}
+        for _kw_type, _kw_c in _all_cards.items():
+            if _kw_type in ["*PART"]:
                 _parts = []
                 _cf_1 = self.__EntityCls_CardFields["*PART"][1]
                 _f_f = lambda x: int(x) if x.strip() else ""
                 _parts = [
                     _l.strip() if index % 2 == 0 else list(map(_f_f, split_bywidth(_l, _cf_1)))
-                    for index, _l in enumerate([_l for _c in _p_c for _l in _c])
+                    for index, _l in enumerate([_l for _c in _kw_c for _l in _c])
                 ]
                 parts = pd.DataFrame(_parts[::2], columns=["name"])
                 parts[["id", "id_sec", "id_mat"]] = pd.DataFrame([x[:3] for x in _parts[1::2]])
@@ -2222,35 +2257,36 @@ class bl_keyfile:
                     }
                     for each in [x[3:] for x in _parts[1::2]]
                 ]
-                parts["keyword"] = _p_type
+                parts["keyword"] = _kw_type
                 parts["card_EX"] = ""
                 parts = parts.astype(dtype={"id": "int32"})
                 for func, keys in zip([int], [["id_sec", "id_mat"]]):
                     for key in keys:
                         parts[key] = parts[key].apply(lambda x: func(x) if not x == "" else x)
-                parts_group_by_type[_p_type] = parts
-        for _p_type, v in parts_group_by_type.items():
+                _group_by_type[_kw_type] = parts
+            ...
+        for _kw_type, v in _group_by_type.items():
             if v.duplicated(subset=["id"]).any():
-                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_p_type}")
+                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated ID in {_kw_type}")
         if not part_cardlines:
             if is_init:
-                for _p_type, _p_c in parts_group_by_type.items():
-                    if _p_type in ["*PART"]:
-                        data_dicts = _p_c.to_dict(orient="records")
-                        _p_c["obj"] = [
+                for _kw_type, _kw_c in _group_by_type.items():
+                    if _kw_type in ["*PART"]:
+                        data_dicts = _kw_c.to_dict(orient="records")
+                        _kw_c["obj"] = [
                             LsDyna_PART(self, **row, keyword_settings=kw_settings)
                             for row in tqdm(
                                 data_dicts,
-                                desc=f"    {_p_type} ".ljust(30),
+                                desc=f"    {_kw_type} ".ljust(30),
                                 leave=True,
                                 unit="",
                                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
                             )
                         ]
-                        self.keywords[_p_type] = _p_c
-            self.parts: pd.DataFrame = parts_group_by_type
+                        self.keywords[_kw_type] = _kw_c
+            self.parts: pd.DataFrame = _group_by_type
         else:
-            return parts_group_by_type[kw_type]
+            return _group_by_type[kw_type]
 
     def get_define_curve(
         self, curve_cardlines: list | str = "", kw_type="*DEFINE_CURVE", is_init=1, replace_param=1
@@ -2261,14 +2297,14 @@ class bl_keyfile:
         _d_c = ["id", "sidr", "sfa", "sfo", "offa", "offo", "dattyp", "lcint", "x", "y"]
         kw_settings = ""
         if not curve_cardlines:
-            for _c_type in self.__topocls_name__["define_curve"]:
-                if _c_type in self.keywords:
+            for _kw_type in self.__topocls_name__["define_curve"]:
+                if _kw_type in self.keywords:
                     curve_cards = []
-                    for _c in self.keywords[_c_type]:
+                    for _c in self.keywords[_kw_type]:
                         curve_cards.append(_c.cards)
                         if len(_c.keyword_settings) > len(kw_settings):
                             kw_settings = _c.keyword_settings
-                    _all_cards[_c_type] = curve_cards
+                    _all_cards[_kw_type] = curve_cards
             if not _all_cards:
                 self.curves = pd.DataFrame(columns=_d_c + ["obj"])
                 return
@@ -2280,18 +2316,18 @@ class bl_keyfile:
                     curve_cardlines = [curve_cardlines[0], *curve_cardlines[1]]
                 curve_cards = [curve_cardlines]
             _all_cards[kw_type] = curve_cards
-        curves_group_by_type = {}
-        for _c_type, v in _all_cards.items():
+        _group_by_type = {}
+        for _kw_type, _kw_c in _all_cards.items():
             _param_mapping = (
                 dict(zip(self.parameters["names"], self.parameters["vals_s"]))
                 if replace_param
                 else {}
             )
-            if _c_type in ["*DEFINE_CURVE"]:
+            if _kw_type in ["*DEFINE_CURVE"]:
                 curves = []
                 _cf_0 = self.__EntityCls_CardFields["*DEFINE_CURVE"][0]
                 _cf_1 = self.__EntityCls_CardFields["*DEFINE_CURVE"][1]
-                for _c_c in v:
+                for _c_c in _kw_c:
                     card0 = [
                         func(var)
                         for var, func in zip(
@@ -2316,35 +2352,38 @@ class bl_keyfile:
                         ]
                     )
                 curves = pd.DataFrame(curves, columns=_d_c)
-                curves["keyword"] = _c_type
+                curves["keyword"] = _kw_type
                 curves["card_EX"] = ""
                 curves = curves.astype(dtype={"id": "int32"})
                 for func, keys in zip([int, float], [["lcint"], ["sfa", "sfo", "offa", "offo"]]):
                     for key in keys:
                         curves[key] = curves[key].apply(lambda x: func(x) if not x == "" else x)
-                curves_group_by_type[_c_type] = curves
-        for _c_type, v in curves_group_by_type.items():
-            if v.duplicated(subset=["id"]).any():
-                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_c_type}")
+                _group_by_type[_kw_type] = curves
+            ...
+        for _kw_type, _kw_c in _group_by_type.items():
+            if _kw_c.duplicated(subset=["id"]).any():
+                print(
+                    f"Warning: {_kw_c.duplicated(subset=['id']).sum()} duplicated ID in {_kw_type}"
+                )
         if not curve_cardlines:
             if is_init:
-                for _c_type, v in curves_group_by_type.items():
-                    if _c_type in ["*DEFINE_CURVE"]:
-                        data_dicts = v.to_dict(orient="records")
-                        v["obj"] = [
+                for _kw_type, _kw_c in _group_by_type.items():
+                    if _kw_type in ["*DEFINE_CURVE"]:
+                        data_dicts = _kw_c.to_dict(orient="records")
+                        _kw_c["obj"] = [
                             LsDyna_DEFINE_CURVE(self, **row, keyword_settings=kw_settings)
                             for row in tqdm(
                                 data_dicts,
-                                desc=f"    {_c_type} ".ljust(30),
+                                desc=f"    {_kw_type} ".ljust(30),
                                 leave=True,
                                 unit="",
                                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
                             )
                         ]
-                        self.keywords[_c_type] = v
-            self.curves: pd.DataFrame = curves_group_by_type
+                        self.keywords[_kw_type] = _kw_c
+            self.curves: pd.DataFrame = _group_by_type
         else:
-            return curves_group_by_type[kw_type]
+            return _group_by_type[kw_type]
 
     def get_set_list(self, set_cardlines: list | str = "", kw_type="*SET_NODE_LIST", is_init=1):
         self.__parsing_topo = 1
@@ -2353,14 +2392,14 @@ class bl_keyfile:
         _d_c = ["id", "da1", "da2", "da3", "da4", "solver", "nids"]
         kw_settings = ""
         if not set_cardlines:
-            for _s_type in self.__topocls_name__["set_list"]:
-                if _s_type in self.keywords:
+            for _kw_type in self.__topocls_name__["set_list"]:
+                if _kw_type in self.keywords:
                     set_cards = []
-                    for _s in self.keywords[_s_type]:
+                    for _s in self.keywords[_kw_type]:
                         set_cards.append(_s.cards)
                         if len(_s.keyword_settings) > len(kw_settings):
                             kw_settings = _s.keyword_settings
-                    _all_cards[_s_type] = set_cards
+                    _all_cards[_kw_type] = set_cards
             if not set_cards:
                 self.sets = pd.DataFrame(columns=_d_c + ["obj"])
                 return
@@ -2372,9 +2411,9 @@ class bl_keyfile:
                     set_cardlines = [set_cardlines[0], *set_cardlines[1]]
                 set_cards = [set_cardlines]
             _all_cards[kw_type] = set_cards
-        sets_group_by_type = {}
-        for _s_type, v in _all_cards.items():
-            if _s_type in [
+        _group_by_type = {}
+        for _kw_type, _kw_c in _all_cards.items():
+            if _kw_type in [
                 "*SET_NODE",
                 "*SET_PART",
                 "*SET_SHELL",
@@ -2389,10 +2428,10 @@ class bl_keyfile:
                 "*SET_SHELL_LIST_TITLE",
             ]:
                 _setslist = []
-                _cf_0 = self.__EntityCls_CardFields[_s_type.replace("_TITLE", "")][0]
-                _cf_1 = self.__EntityCls_CardFields[_s_type.replace("_TITLE", "")][1]
-                for _c in v:
-                    if _s_type.endswith("_TITLE"):
+                _cf_0 = self.__EntityCls_CardFields[_kw_type.replace("_TITLE", "")][0]
+                _cf_1 = self.__EntityCls_CardFields[_kw_type.replace("_TITLE", "")][1]
+                for _c in _kw_c:
+                    if _kw_type.endswith("_TITLE"):
                         _c = _c[1:]
                     card0 = [
                         func(var)
@@ -2408,21 +2447,23 @@ class bl_keyfile:
                     card1 = [split_bywidth(_l, _cf_1) for _l in _c[1:]]
                     _setslist.append([*card0, card1])
                 _setslist = pd.DataFrame(_setslist, columns=_d_c)
-                _setslist["keyword"] = _s_type.replace("_TITLE", "")
+                _setslist["keyword"] = _kw_type.replace("_TITLE", "")
                 _setslist["card_EX"] = ""
                 _setslist = _setslist.astype(dtype={"id": "int32"})
                 _setslist["nids"] = _setslist["nids"].apply(
                     lambda x: [np.int32(i).tolist() for i in x]
                 )
-                sets_group_by_type[_s_type] = _setslist
+                _group_by_type[_kw_type] = _setslist
             ...
-        for _n_type, v in sets_group_by_type.items():
-            if v.duplicated(subset=["id"]).any():
-                print(f"Warning: {v.duplicated(subset=['id']).sum()} duplicated nodes in {_n_type}")
+        for _kw_type, _kw_c in _group_by_type.items():
+            if _kw_c.duplicated(subset=["id"]).any():
+                print(
+                    f"Warning: {_kw_c.duplicated(subset=['id']).sum()} duplicated ID in {_kw_type}"
+                )
         if not set_cardlines:
             if is_init:
-                for _s_type, v in sets_group_by_type.items():
-                    if _s_type in [
+                for _kw_type, _kw_c in _group_by_type.items():
+                    if _kw_type in [
                         "*SET_NODE",
                         "*SET_NODE_LIST",
                         "*SET_PART",
@@ -2436,21 +2477,21 @@ class bl_keyfile:
                         "*SET_PART_LIST_TITLE",
                         "*SET_SHELL_LIST_TITLE",
                     ]:
-                        data_dicts = v.to_dict(orient="records")
-                        v["obj"] = [
+                        data_dicts = _kw_c.to_dict(orient="records")
+                        _kw_c["obj"] = [
                             LsDyna_SET_LIST(self, **row, keyword_settings=kw_settings)
                             for row in tqdm(
                                 data_dicts,
-                                desc=f"    {_s_type} ".ljust(30),
+                                desc=f"    {_kw_type} ".ljust(30),
                                 leave=True,
                                 unit="",
                                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
                             )
                         ]
-                        self.keywords[_s_type] = v
-            self.sets: dict[str, pd.DataFrame] = sets_group_by_type
+                        self.keywords[_kw_type] = _kw_c
+            self.sets: dict[str, pd.DataFrame] = _group_by_type
         else:
-            return sets_group_by_type[kw_type]
+            return _group_by_type[kw_type]
 
     def collect_portion_MAT(self):
         mats = []
@@ -2618,8 +2659,6 @@ class bl_keyfile:
         return path
 
 
-# %%
-# %%
 if __name__ == "__main__":
     import time, cProfile, pstats
 
