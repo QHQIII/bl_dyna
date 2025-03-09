@@ -555,10 +555,8 @@ class LsDyna_ENTITY(__LsDyna_Base):
                             ] * len(_r_c)
                             _ck[0] += 1
                         elif len(_sst_split) == 3:
-                            _cc = [
-                                _cardfield[i] if i < len(_cardfield) else []
-                                for i in range(_r_c[-1] + 1)
-                            ] + _cardfield[_r_c[-1] + 1 :]
+                            _cc = [[]] * (_r_c[-1] + 1) + _cardfield[_r_c[-1] + 1 :]
+                            _cc[0 : len(_cardfield)] = _cardfield
                             for i in _r_c:
                                 _cc[i] = _cardfield[_r_c[0]]
                             _cardfield = _cc
@@ -1737,7 +1735,8 @@ class bl_keyfile:
         kw_lines: list[str] = kf_lines[1:]
         if (
             kw_title == "*ELEMENT_SOLID"
-            and len(split_bywidth(kw_lines[0], [8] * 10)) > 2
+            and len(split_bywidth(kw_lines[0], self.__EntityCls_CardFields["*ELEMENT_SOLID"][0]))
+            > 2
             and len(self.__EntityCls_CardFields["*ELEMENT_SOLID"]) > 1
         ):
             self.__EntityCls_CardFields["*ELEMENT_SOLID"] = [[8] * 10]
