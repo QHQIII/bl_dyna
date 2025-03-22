@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy.spatial import distance
-import pathlib, copy, math
+import pathlib, copy, math, time, os
 from types import MappingProxyType
 from collections import defaultdict
 from itertools import groupby
@@ -1547,7 +1546,7 @@ class LsDyna_SET_LIST(__LsDyna_Base):
                 + [f"{self.solver:<{_cf_0[5]}s}"]
             ),
             "\n",
-            "".join(
+            "\n".join(
                 [
                     _fn2s(each, _cf_1[index]) if not each == "" else " " * _cf_1[index]
                     for _line in self.nids
@@ -2602,6 +2601,13 @@ class bl_keyfile:
         return {method: {"at_index": at_index, "keyword": kw, "obj": newkwobj}}
 
     def save_kf(self, path):
+        if path:
+            path = pathlib.Path(path)
+        else:
+            path = (pathlib.Path(self.kfilepath) or pathlib.Path(os.getcwd()).resolve()) / (
+                str(time.time()).replace(".", "") + ".k"
+            )
+
         with open(path, "w") as file:
             if self.__parsing_topo:
                 passed_k = []
@@ -2659,8 +2665,6 @@ class bl_keyfile:
 
 
 if __name__ == "__main__":
-    import time, cProfile, pstats
-
     start = time.time()
     j = bl_keyfile(
         r"C:\Users\breez\Desktop\kf\k\0.k", parsing_topo=1, is_init=1, acc_initbythread=0
