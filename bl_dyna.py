@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import pathlib, copy, math, time, os
+import pathlib, copy, math, time, os, importlib, datetime, shutil, re, psutil
 from types import MappingProxyType
 from collections import defaultdict
 from itertools import groupby
@@ -312,13 +312,16 @@ EntityCls_PagmFields = {
         for k in ["*SET_NODE", "*SET_PART", "*SET_SHELL"]
         + ["*SET_NODE_LIST", "*SET_PART_LIST", "*SET_SHELL_LIST"]
     },
+    #
 }
 TopoClsMap = {
     "nodes": ["*NODE"],
+    #
     "elems": ["*ELEMENT_SOLID", "ELEMENT_SOLID_H20", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
     + ["*ELEMENT_BEAM", "*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"],
     "parts": ["*PART"],
     "define_curve": ["*DEFINE_CURVE"],
+    #
     "set_list": ["*SET_NODE", "*SET_PART", "*SET_SHELL"]
     + ["*SET_NODE_LIST", "*SET_PART_LIST", "*SET_SHELL_LIST"]
     + ["*SET_NODE_TITLE", "*SET_PART_TITLE", "*SET_SHELL_TITLE"]
@@ -326,8 +329,8 @@ TopoClsMap = {
 }
 
 
-def reshape_list(ids: list = [0], _f_W: int = 10, _m_l: int = 80):
-    _f_n = int(_m_l / _f_W)
+def reshape_list(ids: list = [0], n: int = 8):
+    _f_n = int(n)
     res = []
     for i in range(int(math.ceil(len(ids) / (_f_n)))):
         res.append([each for each in ids[i * _f_n : (i + 1) * _f_n]])
@@ -399,16 +402,12 @@ def split_sequence(seq, num):
         end_idx = start_idx + current_length
         result.append(seq[start_idx:end_idx])
         start_idx = end_idx
-    return result
+    return [x for x in result if x]
 
 
 class __LsDyna_Base:
     def __init__(
-        self,
-        outer_obj,
-        keyword: str = "",
-        cards: list[str] = [""],
-        keyword_settings: str = "",
+        self, outer_obj, keyword: str = "", cards: list[str] = [""], keyword_settings: str = ""
     ):
         self.__dict__["__is_init__"] = True
         self.__outer_obj__: bl_keyfile = outer_obj
@@ -465,7 +464,10 @@ class __LsDyna_Base:
                 if self.keyword in sum(self.__outer_obj__.__topocls_name__.values(), []):
                     _pd_newkw = self.__outer_obj__.__update_kwdf__(self)
                     _pd_all = self.__outer_obj__.keywords[self.keyword]
-                    _pd_all.loc[_pd_all.obj == self, :] = _pd_newkw
+                    _pd_newkw = _pd_newkw[_pd_all.columns]
+                    _pd_all.iloc[
+                        [next((_i for _i, _v in enumerate(_pd_all.obj == self) if _v), -1)]
+                    ] = _pd_newkw
                     self.__outer_obj__._bl_keyfile__filtercache = {}
 
     def __deepcopy__(self, memo):
@@ -504,10 +506,7 @@ class LsDyna_ENTITY(__LsDyna_Base):
         pagmfield=0,
     ):
         super().__init__(
-            outer_obj=outer_obj,
-            keyword=keyword,
-            cards=cards,
-            keyword_settings=keyword_settings,
+            outer_obj=outer_obj, keyword=keyword, cards=cards, keyword_settings=keyword_settings
         )
         self.__dict__["__is_init__"] = True
         self.__set_onlyin_inner__ += ["_cardfield", "_pagmfield"]
@@ -678,7 +677,10 @@ class LsDyna_ENTITY(__LsDyna_Base):
                     if self.keyword in sum(self.__outer_obj__.__topocls_name__.values(), []):
                         _pd_newkw = self.__outer_obj__.__update_kwdf__(self)
                         _pd_all = self.__outer_obj__.keywords[self.keyword]
-                        _pd_all.loc[_pd_all.obj == self, :] = _pd_newkw
+                        _pd_newkw = _pd_newkw[_pd_all.columns]
+                        _pd_all.iloc[
+                            [next((_i for _i, _v in enumerate(_pd_all.obj == self) if _v), -1)]
+                        ] = _pd_newkw
                         self.__outer_obj__._bl_keyfile__filtercache = {}
                 return self.cards[card]
             except:
@@ -752,7 +754,6 @@ class LsDyna_ENTITY(__LsDyna_Base):
                 result = self.cards
         else:
             result = f"不处理{_excl_kw}"
-        print(result)
         self.__dict__["__is_inner__"] = False
 
     def __repr__(self):
@@ -823,10 +824,7 @@ class LsDyna_NODE(__LsDyna_Base):
         self.x = float(x)
         self.y = float(y)
         self.z = float(z)
-        card1_add_fields = {
-            **{"TC": "", "RC": ""},
-            **card1_add_fields,
-        }
+        card1_add_fields = {**{"TC": "", "RC": ""}, **card1_add_fields}
         self.card1_add_fields = [
             float(each) if not isinstance(each, str) else "" for each in card1_add_fields.values()
         ]
@@ -915,10 +913,7 @@ class LsDyna_NODE(__LsDyna_Base):
 class __LsDyna_Elem_Factory(__LsDyna_Base):
     def __init__(self, outer_obj, keyword, id, id_part, id_nodes, card_EX, keyword_settings=""):
         super().__init__(
-            outer_obj=outer_obj,
-            keyword="*ELEMENT_*",
-            cards=[""],
-            keyword_settings=keyword_settings,
+            outer_obj=outer_obj, keyword="*ELEMENT_*", cards=[""], keyword_settings=keyword_settings
         )
         self.__dict__["__is_init__"] = True
         self.keyword = keyword
@@ -999,8 +994,10 @@ class __LsDyna_Elem_Factory(__LsDyna_Base):
         if centercoords:
             lines.append(f"  Coords:".ljust(10) + f"{centercoords}")
         _l_e_n = len(self.id_nodes)
-        lines.append(f"  Nodes:".ljust(10) + f"{_l_e_n}") + (
-            f"with {_l_e_n-8} mid nodes" if _l_e_n > 8 else f""
+        lines.append(
+            f"  Nodes:".ljust(10)
+            + f"{_l_e_n}"
+            + (f"with {_l_e_n-8} mid nodes" if _l_e_n > 8 else f"")
         )
         lines.append(f"    ids:".ljust(10) + f"{self.id_nodes}")
         lines.append(f"  partid:".ljust(10) + f"{self.id_part}")
@@ -1139,14 +1136,7 @@ class LsDyna_ELEMENT_BEAM(__LsDyna_Elem_Factory):
         id: int,
         id_part: int,
         id_nodes: list[int],
-        card1_add_fields: dict[str, int] = {
-            "N3": "",
-            "RT1": "",
-            "RR1": "",
-            "RT2": "",
-            "RR2": "",
-            "LOCAL": "",
-        },
+        card1_add_fields={"N3": "", "RT1": "", "RR1": "", "RT2": "", "RR2": "", "LOCAL": ""},
         keyword="*ELEMENT_BEAM",
         card_EX="",
         keyword_settings: str = "",
@@ -1162,14 +1152,7 @@ class LsDyna_ELEMENT_BEAM(__LsDyna_Elem_Factory):
         )
         self.__dict__["__is_init__"] = True
         card1_add_fields = {
-            **{
-                "N3": "",
-                "RT1": "",
-                "RR1": "",
-                "RT2": "",
-                "RR2": "",
-                "LOCAL": "",
-            },
+            **{"N3": "", "RT1": "", "RR1": "", "RT2": "", "RR2": "", "LOCAL": ""},
             **card1_add_fields,
         }
         self.card1_add_fields = [
@@ -1533,24 +1516,20 @@ class LsDyna_SET_LIST(__LsDyna_Base):
             "".join(
                 [
                     _fn2s(each, _cf_0[index]) if not each == "" else " " * _cf_0[index]
-                    for index, each in enumerate(
-                        [
-                            self.id,
-                            self.da1,
-                            self.da2,
-                            self.da3,
-                            self.da4,
-                        ]
-                    )
+                    for index, each in enumerate([self.id, self.da1, self.da2, self.da3, self.da4])
                 ]
                 + [f"{self.solver:<{_cf_0[5]}s}"]
             ),
             "\n",
             "\n".join(
                 [
-                    _fn2s(each, _cf_1[index]) if not each == "" else " " * _cf_1[index]
+                    "".join(
+                        [
+                            _fn2s(each, _cf_1[index]) if not each == "" else " " * _cf_1[index]
+                            for index, each in enumerate(_line)
+                        ]
+                    )
                     for _line in self.nids
-                    for index, each in enumerate(_line)
                 ]
             ),
             "\n",
@@ -1597,9 +1576,11 @@ class bl_keyfile:
         is_init=1,
         acc_initbythread=0,
         encoding="utf-8",
+        show_pbar=1,
     ):
         self.__set_params()
         self.__set_fieldconfig()
+        self.__show_pbar__ = not show_pbar
         if keyfile:
             self.kfilepath = pathlib.Path(keyfile)
             self.encoding = encoding
@@ -1791,11 +1772,7 @@ class bl_keyfile:
                             _fieldlong = 10
                         each = [_fieldlong if x < _fieldlong else x for x in each]
         if only_pre:
-            return {
-                "keyword": kw_title,
-                "cards": kw_lines,
-                "keyword_settings": kw_settings,
-            }
+            return {"keyword": kw_title, "cards": kw_lines, "keyword_settings": kw_settings}
         else:
             return LsDyna_ENTITY(
                 self, keyword=kw_title, cards=kw_lines, keyword_settings=kw_settings
@@ -1850,6 +1827,7 @@ class bl_keyfile:
                     leave=True,
                     unit="",
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                    disable=self.__show_pbar__,
                 )
             for _s, _e in _items:
                 entity = self.__read_kwstr__(kf_lines=kf_lines[_s:_e])
@@ -1915,6 +1893,7 @@ class bl_keyfile:
                 leave=True,
                 unit="",
                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}{postfix:<16}",
+                disable=self.__show_pbar__,
             ) as pbar:
                 for i, future in enumerate(as_completed(futures)):
                     _obj.extend(future.result())
@@ -1930,6 +1909,7 @@ class bl_keyfile:
                 leave=True,
                 unit="",
                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                disable=self.__show_pbar__,
             )
         return [LsDyna_NODE(self, **row, keyword_settings=kw_settings) for row in batch_data]
 
@@ -1968,6 +1948,7 @@ class bl_keyfile:
                     leave=False,
                     unit="",
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                    disable=self.__show_pbar__,
                 )
                 _f_f = lambda x: x if x.strip() else ""
                 _nodes = [
@@ -2024,6 +2005,7 @@ class bl_keyfile:
                 leave=True,
                 unit="",
                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                disable=self.__show_pbar__,
             )
         return [cls(self, **row, keyword_settings=kw_settings) for row in batch_data]
 
@@ -2069,6 +2051,7 @@ class bl_keyfile:
                     leave=False,
                     unit="",
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                    disable=self.__show_pbar__,
                 )
                 _f_f = lambda x: int(x) if x.strip() else ""
                 _f_r = lambda _cf_0: [
@@ -2100,6 +2083,7 @@ class bl_keyfile:
                     ]
                     elems["keyword"] = _kw_type
                     elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
+                #
                 if _kw_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
                     _cf_0 = self.__EntityCls_CardFields[_kw_type][0]
                     if _kw_type in ["*ELEMENT_SHELL_THICKNESS"]:
@@ -2115,6 +2099,7 @@ class bl_keyfile:
                     elems["card_EX"] = ""
                     if _kw_type in ["*ELEMENT_SHELL_THICKNESS"]:
                         elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
+                #
                 if _kw_type in [
                     "*ELEMENT_BEAM",
                     "*ELEMENT_BEAM_OFFSET",
@@ -2207,6 +2192,7 @@ class bl_keyfile:
             return _group_by_type[kw_type]
 
     def get_parts(self, part_cardlines: list | str = "", kw_type="*PART", is_init=1):
+        #
         self.__parsing_topo = 1
         self.__topocls_name__.update({"parts": TopoClsMap["parts"]})
         _all_cards = defaultdict(list)
@@ -2279,6 +2265,7 @@ class bl_keyfile:
                                 leave=True,
                                 unit="",
                                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                                disable=self.__show_pbar__,
                             )
                         ]
                         self.keywords[_kw_type] = _kw_c
@@ -2289,6 +2276,7 @@ class bl_keyfile:
     def get_define_curve(
         self, curve_cardlines: list | str = "", kw_type="*DEFINE_CURVE", is_init=1, replace_param=1
     ):
+        #
         self.__parsing_topo = 1
         self.__topocls_name__.update({"define_curve": TopoClsMap["define_curve"]})
         _all_cards = defaultdict(list)
@@ -2376,6 +2364,7 @@ class bl_keyfile:
                                 leave=True,
                                 unit="",
                                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                                disable=self.__show_pbar__,
                             )
                         ]
                         self.keywords[_kw_type] = _kw_c
@@ -2384,6 +2373,7 @@ class bl_keyfile:
             return _group_by_type[kw_type]
 
     def get_set_list(self, set_cardlines: list | str = "", kw_type="*SET_NODE_LIST", is_init=1):
+        #
         self.__parsing_topo = 1
         self.__topocls_name__.update({"set_list": TopoClsMap["set_list"]})
         _all_cards = defaultdict(list)
@@ -2484,6 +2474,7 @@ class bl_keyfile:
                                 leave=True,
                                 unit="",
                                 bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
+                                disable=self.__show_pbar__,
                             )
                         ]
                         self.keywords[_kw_type] = _kw_c
@@ -2557,22 +2548,20 @@ class bl_keyfile:
         if newkwobj.keyword in _reverse.keys():
             _func = getattr(self, f"get_{_reverse[newkwobj.keyword].lower()}")
             _pd_newcols = _func(newkwobj.str_cardsonly, newkwobj.keyword)
-        _pd_newkw = pd.DataFrame([newkwobj], columns=["obj"]).join(_pd_newcols)
-        return _pd_newkw
+        _pd_newcols["obj"] = newkwobj
+        return _pd_newcols
 
-    def insert_kw(
-        self,
-        newkwobj,
-        at_index,
-        method: str = "add",
-    ):
+    def insert_kw(self, newkwobj, at_index, method: str = "add"):
         kw = newkwobj.keyword
         if self.keywords.get(kw, False) is not False and at_index < len(self.keywords[kw]):
             _kw_container = self.keywords[kw]
             if kw in sum(self.__topocls_name__.values(), []):
                 if method == "add":
                     _pd_newkw = self.__update_kwdf__(newkwobj)
-                    _kw_container.loc[len(_kw_container)] = [0] * len(_kw_container.loc[0])
+                    addindex = _kw_container.index.max() + (
+                        1 if isinstance(_kw_container.index.max(), (int, float)) else "_1"
+                    )
+                    _kw_container.loc[addindex] = [0] * len(_kw_container.loc[0])
                     _kw_container.iloc[:] = pd.concat(
                         [_kw_container.iloc[:at_index], _pd_newkw, _kw_container.iloc[at_index:-1]],
                         axis=0,
@@ -2607,7 +2596,6 @@ class bl_keyfile:
             path = (pathlib.Path(self.kfilepath) or pathlib.Path(os.getcwd()).resolve()) / (
                 str(time.time()).replace(".", "") + ".k"
             )
-
         with open(path, "w") as file:
             if self.__parsing_topo:
                 passed_k = []
@@ -2663,11 +2651,110 @@ class bl_keyfile:
                         file.write(_kw_e.str)
         return path
 
+    def show(self):
+        BL_READER = importlib.import_module("BL_READER")
+        if self.__parsing_topo:
+            d = BL_READER.get_dynatopo.__new__(BL_READER.get_dynatopo)
+            d.keyfile = self
+            d.__show_pbar__ = self.__show_pbar__
+            d.node, _elems = d._get_dynatopo__get_topo_bybl()
+            d._get_dynatopo__gropby_elemtype(_elems)
+            d.info_elems_estimated_size()
+            d._normalize_pos(normalize_pos="experience")
+            d.plot_3d()
+
+    def solve(
+        self,
+        runpath="",
+        solver=pathlib.Path(os.getenv("lstc_file")).parent.joinpath(
+            "program", "ls-dyna_smp_d_R11_1_0_winx64_ifort160.exe"
+        ),
+        NCPU=4,
+        MEMORY=200000000,
+        show_log=0,
+    ):
+        import subprocess
+
+        runfile = self.save_kf() if any(self.__diff_kf.values()) else self.kfilepath
+        runpath = pathlib.Path(runpath) if runpath else runfile.with_suffix("")
+        if runpath.exists():
+            shutil.rmtree(runpath)
+        runpath.mkdir(parents=True)
+        shutil.copy2(runfile, runpath / runfile.name)
+        current_path = os.getcwd()
+        os.chdir(runpath)
+        res = subprocess.Popen(
+            f""""{solver}" I="{str(runpath / runfile.name)}" O="{str(runpath / "d3plot")}" NCPU={NCPU} MEMORY={MEMORY}""",
+            shell=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        with open(runpath / "bl_keyfile_solve.log", "a+") as f:
+            output = []
+            for _s in iter(res.stdout.readline, b""):
+                _s = _s.decode().lstrip().rstrip().replace("\r\n", "").replace("\n", "")
+                if _s:
+                    output.append([datetime.datetime.now(), _s])
+                    f.write("|--->".join(str(x) for x in output[-1]) + "\n")
+                    if show_log:
+                        print("|--->".join(str(x) for x in output[-1]))
+        res.stdin.close()
+        res.stdout.close()
+        res.stderr.close()
+        os.chdir(current_path)
+        restr = r"^.*Total CPU time\s*=\s*(\d+)\s*seconds.*hours.*minutes"
+        for _s in output[::-1]:
+            match = re.search(restr, _s[-1])
+            if match:
+                return {"runpath": runpath, "TotalCpuTime": float(match.group(1))}
+        return {"runpath": runpath, "TotalCpuTime": 0}
+
+
+def __bl_keyfile_solve(f):
+    return bl_keyfile(f, parsing_topo=0, is_init=0).solve()
+
+
+def execute_in_parallel(
+    runpath=".",
+    filelist: list | set = 0,
+    bar_title="Ls_Dyna_run",
+    max_workers=round(psutil.cpu_count(logical=False) / 4),
+):
+    runpath = pathlib.Path(runpath if runpath else os.getcwd()).resolve()
+    if not runpath.exists():
+        runpath.mkdir(parents=True)
+    if filelist:
+        for f in filelist:
+            try:
+                shutil.copy2(f, runpath / f.name)
+            except:
+                pass
+    filelist = runpath.glob("*.k")
+    _start_time = time.time()
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(__bl_keyfile_solve, f) for f in filelist]
+        _obj = []
+        with tqdm(
+            total=len(futures),
+            desc=f"    {bar_title.upper()} ".ljust(30),
+            leave=True,
+            unit="",
+            bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}{postfix:<16}",
+        ) as pbar:
+            for res in as_completed(futures):
+                _obj.append(res.result())
+                pbar.update(1)
+                pbar.set_postfix_str(
+                    f"ccm:{sum(x['TotalCpuTime'] for x in _obj)}s"
+                    + f"|tcm:{round(time.time()-_start_time,2)}s"
+                )
+        return _obj
+
 
 if __name__ == "__main__":
-    start = time.time()
     j = bl_keyfile(
-        r"C:\Users\breez\Desktop\kf\k\0.k", parsing_topo=1, is_init=1, acc_initbythread=0
+        r"C:\Users\breez\Desktop\kf\440.k", parsing_topo=1, is_init=1, acc_initbythread=0
     )
-    end = time.time()
-    print(end - start)
+    j.show()
+    execute_in_parallel(r"C:\Users\breez\Desktop\kf")
