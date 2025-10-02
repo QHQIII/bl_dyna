@@ -56,6 +56,7 @@ EntityCls_CardFields = {
         "*ELEMENT_BEAM_OFFSET": [[8] * 10, [8] * 3],
         "*ELEMENT_BEAM_ORIENTATION": [[8] * 10, [8] * 6],
         "*PART": [[80], [10] * 8],
+        "*PART_": [[80], [10] * 8, [10] * 8],
         "*DEFINE_CURVE": [[10] * 8, [20] * 2],
     },
     **{
@@ -286,6 +287,17 @@ EntityCls_PagmFields = {
             "ADPOPT": {"index": ["1::2", 6], "format": "", "info": ""},
             "TMID": {"index": ["1::2", 7], "format": "", "info": ""},
         },
+        "*PART_": {
+            "NAME": {"index": ["0::3", 0], "format": "", "info": ""},
+            "PID": {"index": ["1::3", 0], "format": "", "info": "PART ID"},
+            "SECID": {"index": ["1::3", 1], "format": "", "info": "截面ID"},
+            "MID": {"index": ["1::3", 2], "format": "", "info": "材料ID"},
+            "EOSID": {"index": ["1::3", 3], "format": "", "info": "EOSID"},
+            "HGID": {"index": ["1::3", 4], "format": "", "info": ""},
+            "GRAV": {"index": ["1::3", 5], "format": "", "info": ""},
+            "ADPOPT": {"index": ["1::3", 6], "format": "", "info": ""},
+            "TMID": {"index": ["1::3", 7], "format": "", "info": ""},
+        },
         "*DEFINE_CURVE": {
             "LCID": {"index": [0, 0], "format": "", "info": "曲线ID"},
             "SIDR": {"index": [0, 1], "format": "", "info": "曲线类型"},
@@ -312,16 +324,13 @@ EntityCls_PagmFields = {
         for k in ["*SET_NODE", "*SET_PART", "*SET_SHELL"]
         + ["*SET_NODE_LIST", "*SET_PART_LIST", "*SET_SHELL_LIST"]
     },
-    #
 }
 TopoClsMap = {
     "nodes": ["*NODE"],
-    #
     "elems": ["*ELEMENT_SOLID", "ELEMENT_SOLID_H20", "*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]
     + ["*ELEMENT_BEAM", "*ELEMENT_BEAM_OFFSET", "*ELEMENT_BEAM_ORIENTATION"],
     "parts": ["*PART"],
     "define_curve": ["*DEFINE_CURVE"],
-    #
     "set_list": ["*SET_NODE", "*SET_PART", "*SET_SHELL"]
     + ["*SET_NODE_LIST", "*SET_PART_LIST", "*SET_SHELL_LIST"]
     + ["*SET_NODE_TITLE", "*SET_PART_TITLE", "*SET_SHELL_TITLE"]
@@ -633,6 +642,7 @@ class LsDyna_ENTITY(__LsDyna_Base):
                 x
                 for x in _ep
                 if len(self.cards[x[0]].rstrip("\n")) >= sum(self._cardfield[x[0]][: x[1] + 1])
+                or (self._cardfield[x[0]][x[1]] > 60)
             ]
             _pick_d = defaultdict(list)
             for _i_c, _i_f in _ep:
@@ -695,9 +705,9 @@ class LsDyna_ENTITY(__LsDyna_Base):
                     range_card = [pos[0]]
                     range_field = [[pos[1]]]
                 else:
-                    raise ValueError("位置索引复制必须是 [int,int] 或 [int]")
+                    raise ValueError("位置索引赋值必须是 [int,int] 或 [int]")
             elif isinstance(pos, slice):
-                raise ValueError("位置索引复制必须是 [int,int] 或 [int]")
+                raise ValueError("位置索引赋值必须是 [int,int] 或 [int]")
             elif isinstance(pos, str):
                 if pos in self._pagmfield.keys():
                     card, field = self._pagmfield[pos]["index"]
@@ -738,8 +748,11 @@ class LsDyna_ENTITY(__LsDyna_Base):
                     _ep = [
                         x
                         for x in _ep
-                        if len(self.cards[x[0]].rstrip("\n"))
-                        >= sum(self._cardfield[x[0]][: x[1] + 1])
+                        if (
+                            len(self.cards[x[0]].rstrip("\n"))
+                            >= sum(self._cardfield[x[0]][: x[1] + 1])
+                        )
+                        or (self._cardfield[x[0]][x[1]] > 60)
                     ]
                     _l_s = len(_ep)
                     if _l_s == 1:
@@ -1058,8 +1071,7 @@ class LsDyna_ELEMENT_SOLID(__LsDyna_Elem_Factory):
             + "$     N1      N2      N3      N4      N5      N6      N7      N8\n"
         ).replace(" ", "-")
         _cf = self._cardfield
-        _cf_0 = _cf[0]
-        _cf_1 = _cf[1]
+        _cf_0, _cf_1 = (_cf[0], _cf[1]) if len(_cf) > 1 else (_cf[0][0:2], _cf[0][2:])
         _fn2s = format_numeric2str
         str_cardsonly_parts = [
             _fn2s(self.id, _cf_0[0]),
@@ -1733,15 +1745,14 @@ class bl_keyfile:
                 _ec[kw_title] = [[80]] + _ec[_t_ref]
             else:
                 _keys = sorted([x for x in _ec_k if _t_ref.startswith(x)], key=len, reverse=True)
-                _ec[kw_title] = _ec[_keys[0]] if _keys else [[80]]
+                _ec[kw_title] = ([[80]] + _ec[_keys[0]]) if _keys else [[80]]
             _ep = self.__EntityCls_PagmFields
             _ep_k = _ep.keys()
             if _t_ref in _ep_k:
                 _ep[kw_title] = copy.deepcopy(_ep[_t_ref])
             else:
                 _keys = sorted([x for x in _ep_k if _t_ref.startswith(x)], key=len, reverse=True)
-                _ep[kw_title] = _ep[_keys[0]] if _keys else {}
-            _ep[kw_title].update({"NAME": {"index": [0, 0], "format": "", "info": "TITLE"}})
+                _ep[kw_title] = copy.deepcopy(_ep[_keys[0]]) if _keys else {}
             for _, v in _ep[kw_title].items():
                 _p_i = v["index"]
                 if isinstance(_p_i[0], int):
@@ -1757,6 +1768,7 @@ class bl_keyfile:
                         _p_i[0] = f"{_f_a_0(_s_s[0])}:{_f_a_1(_s_s[1])}:{_s_s[2]}"
                     else:
                         raise ValueError("关键字字段索引设置错误")
+            _ep[kw_title].update({"NAME": {"index": [0, 0], "format": "", "info": "TITLE"}})
         if kw_title == "*KEYWORD" and any([x in kw_settings for x in ["=Y", "=S"]]):
             if "I10" in kw_settings:
                 self.__set_fieldconfig(FORMAT_TYPE="I10")
@@ -2062,13 +2074,13 @@ class bl_keyfile:
                 ]
                 _f_u = lambda x: list(dict.fromkeys([_id for _id in x if _id]))
                 if _kw_type in ["*ELEMENT_SOLID"]:
-                    _cf_0 = self.__EntityCls_CardFields[_kw_type][1]
+                    _cf_0 = self.__EntityCls_CardFields[_kw_type][-1]
                     _elems = _f_r(_cf_0)
-                    try:
+                    if len(self.__EntityCls_CardFields[_kw_type]) > 1:
                         elems = pd.DataFrame(_elems[::2], columns=["id", "id_part"]).join(
                             pd.DataFrame({"id_nodes": [_f_u(i) for i in _elems[1::2]]})
                         )
-                    except:
+                    else:
                         elems = pd.DataFrame(
                             [[x[0], x[1], _f_u(x[2:])] for x in _elems], columns=_d_c
                         )
@@ -2083,7 +2095,6 @@ class bl_keyfile:
                     ]
                     elems["keyword"] = _kw_type
                     elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
-                #
                 if _kw_type in ["*ELEMENT_SHELL", "*ELEMENT_SHELL_THICKNESS"]:
                     _cf_0 = self.__EntityCls_CardFields[_kw_type][0]
                     if _kw_type in ["*ELEMENT_SHELL_THICKNESS"]:
@@ -2099,7 +2110,6 @@ class bl_keyfile:
                     elems["card_EX"] = ""
                     if _kw_type in ["*ELEMENT_SHELL_THICKNESS"]:
                         elems["card_EX"] = [_l for _c in _kw_c for _l in _c[1::2]]
-                #
                 if _kw_type in [
                     "*ELEMENT_BEAM",
                     "*ELEMENT_BEAM_OFFSET",
@@ -2192,7 +2202,6 @@ class bl_keyfile:
             return _group_by_type[kw_type]
 
     def get_parts(self, part_cardlines: list | str = "", kw_type="*PART", is_init=1):
-        #
         self.__parsing_topo = 1
         self.__topocls_name__.update({"parts": TopoClsMap["parts"]})
         _all_cards = defaultdict(list)
@@ -2276,7 +2285,6 @@ class bl_keyfile:
     def get_define_curve(
         self, curve_cardlines: list | str = "", kw_type="*DEFINE_CURVE", is_init=1, replace_param=1
     ):
-        #
         self.__parsing_topo = 1
         self.__topocls_name__.update({"define_curve": TopoClsMap["define_curve"]})
         _all_cards = defaultdict(list)
@@ -2373,7 +2381,6 @@ class bl_keyfile:
             return _group_by_type[kw_type]
 
     def get_set_list(self, set_cardlines: list | str = "", kw_type="*SET_NODE_LIST", is_init=1):
-        #
         self.__parsing_topo = 1
         self.__topocls_name__.update({"set_list": TopoClsMap["set_list"]})
         _all_cards = defaultdict(list)
@@ -2388,7 +2395,7 @@ class bl_keyfile:
                         if len(_s.keyword_settings) > len(kw_settings):
                             kw_settings = _s.keyword_settings
                     _all_cards[_kw_type] = set_cards
-            if not set_cards:
+            if not _all_cards:
                 self.sets = pd.DataFrame(columns=_d_c + ["obj"])
                 return
         else:
@@ -2589,12 +2596,13 @@ class bl_keyfile:
         self.__diff_kf[method].append({kw: newkwobj})
         return {method: {"at_index": at_index, "keyword": kw, "obj": newkwobj}}
 
-    def save_kf(self, path):
+    def save_kf(self, path=0):
         if path:
             path = pathlib.Path(path)
         else:
-            path = (pathlib.Path(self.kfilepath) or pathlib.Path(os.getcwd()).resolve()) / (
-                str(time.time()).replace(".", "") + ".k"
+            path = self.kfilepath or (pathlib.Path(os.getcwd()).resolve() / "test.k")
+            path = path.with_name(
+                path.stem + time.strftime("_%Y_%m_%d_%H_%M_%S", time.localtime()) + ".k"
             )
         with open(path, "w") as file:
             if self.__parsing_topo:
@@ -2651,7 +2659,7 @@ class bl_keyfile:
                         file.write(_kw_e.str)
         return path
 
-    def show(self):
+    def show(self, save3d=0):
         BL_READER = importlib.import_module("BL_READER")
         if self.__parsing_topo:
             d = BL_READER.get_dynatopo.__new__(BL_READER.get_dynatopo)
@@ -2662,6 +2670,8 @@ class bl_keyfile:
             d.info_elems_estimated_size()
             d._normalize_pos(normalize_pos="experience")
             d.plot_3d()
+            if save3d:
+                d.save_3d()
 
     def solve(
         self,
@@ -2712,7 +2722,7 @@ class bl_keyfile:
 
 
 def __bl_keyfile_solve(f):
-    return bl_keyfile(f, parsing_topo=0, is_init=0).solve()
+    return bl_keyfile(f, parsing_topo=0, is_init=0, show_pbar=0).solve()
 
 
 def execute_in_parallel(
@@ -2750,11 +2760,3 @@ def execute_in_parallel(
                     + f"|tcm:{round(time.time()-_start_time,2)}s"
                 )
         return _obj
-
-
-if __name__ == "__main__":
-    j = bl_keyfile(
-        r"C:\Users\breez\Desktop\kf\440.k", parsing_topo=1, is_init=1, acc_initbythread=0
-    )
-    j.show()
-    execute_in_parallel(r"C:\Users\breez\Desktop\kf")
