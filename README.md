@@ -181,11 +181,13 @@ DYNA前后处理、可视化及自动优化求解
 
 为网格及必要拓扑结构构造三维对象显示，在后端代码和前端人机交互层面提供包括选择、高亮、切片、表面提取、三维模型导出等基础交互动作
 
+- ![image-20251002165319764](res/README/image-20251002165319764.png)
+
 选择与高亮
 
 - | 基础                                                         |                                                              | 二维化选择与高亮设定                                         | 筛选与二维化                                                 |
   | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-  | ![image-20251002161816681](res/README/image-20251002161816681.png) | <img src="res/README/image-20251002161931715.png" alt="image-20251002161931715" style="zoom: 150%;" /> | ![image-20251002155115732](res/README/image-20251002155115732.png) | <img src="res/README/加载区域_node_(0, 400, 250).png" alt="加载区域_node_(0, 400, 250)" style="zoom:33%;" /> |
+  | ![image-20251002161816681](res/README/image-20251002161816681.png) | <img src="res/README/image-20251002161931715.png" alt="image-20251002161931715" style="zoom: 150%;" /> | ![image-20251002155115732](res/README/image-20251002155115732.png) | <img src="res/README/加载区域_node_(0, 400, 250).png" alt="加载区域_node_(0, 400, 250)"  /> |
 
   
 
@@ -234,7 +236,16 @@ DYNA前后处理、可视化及自动优化求解
 
 计算结果提取、作色与显示
 
-- 二维
+- ```PYTHON
+  db = get_dynaresp(d3plot=list(path.glob("d3plot"))[0], binout=list(path.glob("binout"))[0])
+  _ = db.read_elout(respfile="binout")
+  ```
+
+- 筛选显示范围并做时间历程渲染
+
+- ![image-20251002170053221](res/README/image-20251002170053221.png)
+
+- 某一时刻的二维显示（调整着色映射器）
 
   ![back_eps_yy.pngAmplitude_1_mean_resmap](res/README/back_eps_yy.pngAmplitude_1_mean_resmap.png)
 
