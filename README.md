@@ -1,6 +1,6 @@
 DYNA前后处理、可视化及自动优化求解
 
-- 示例k文件来源：[Yaris Dynamic Roof Crush](https://www.dynaexamples.com/implicit/Yaris Dynamic Roof Crush)
+- 示例k文件来源：[Yaris Dynamic Roof Crush](https://www.dynaexamples.com/implicit/Yaris%20Dynamic%20Roof%20Crush)
 
 - ```python
   j = bl_keyfile("000_yaris_dynamic_roof_crush_01.k")
@@ -187,7 +187,7 @@ DYNA前后处理、可视化及自动优化求解
 
 - | 基础                                                         |                                                              | 二维化选择与高亮设定                                         | 筛选与二维化                                                 |
   | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-  | ![image-20251002161816681](res/README/image-20251002161816681.png) | <img src="res/README/image-20251002161931715.png" alt="image-20251002161931715" style="zoom: 150%;" /> | ![image-20251002155115732](res/README/image-20251002155115732.png) | <img src="res/README/加载区域_node_(0, 400, 250).png" alt="加载区域_node_(0, 400, 250)"  /> |
+  | ![image-20251002161816681](res/README/image-20251002161816681.png) | <img src="res/README/image-20251002161931715.png" alt="image-20251002161931715"  /> | ![image-20251002155115732](res/README/image-20251002155115732.png) | <img src="res/README/加载区域_node_(0, 400, 250).png" alt="加载区域_node_(0, 400, 250)" style="zoom:;" /> |
 
   
 
