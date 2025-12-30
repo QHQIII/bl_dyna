@@ -1,9 +1,9 @@
 import numpy as np
 import pandas as pd
-import pathlib, copy, math, time, os, importlib, datetime, shutil, re, psutil
+import pathlib, copy, math, time, os, importlib, datetime, shutil, re, psutil, inspect
 from types import MappingProxyType
 from collections import defaultdict
-from itertools import groupby
+from itertools import groupby, chain
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
@@ -338,12 +338,9 @@ TopoClsMap = {
 }
 
 
-def reshape_list(ids: list = [0], n: int = 8):
-    _f_n = int(n)
-    res = []
-    for i in range(int(math.ceil(len(ids) / (_f_n)))):
-        res.append([each for each in ids[i * _f_n : (i + 1) * _f_n]])
-    return res
+def reshape_list(ids: list, n: int = 8):
+    n = int(n)
+    return [ids[i : i + n] for i in range(0, len(ids), n)]
 
 
 def convert_to_tuple(nested_list):
@@ -353,52 +350,64 @@ def convert_to_tuple(nested_list):
 def split_bywidth(line, widths: list[int], replace_param: dict[str, str] = None):
     line = line.rstrip("\n")
     fields = []
-    index = 0
-    while line and index < len(widths):
-        fields.append(line[0 : widths[index]])
-        line = line[widths[index] :]
-        index += 1
+    idx = 0
+    for _w in widths:
+        if idx >= len(line):
+            break
+        fields.append(line[idx : idx + _w])
+        idx += _w
     if replace_param:
-        _fields = []
-        for s in fields:
-            _p_s = s.strip()
-            if _p_s[0] == "&" and _p_s[1:] in replace_param.keys():
-                s = replace_param[_p_s[1:]]
-            _fields.append(s)
-        fields = _fields
+        fields = [
+            (
+                value
+                if (_f := _s.strip())[0] == "&" and (value := replace_param.get(_f[1:])) is not None
+                else _s
+            )
+            for _s in fields
+        ]
     return fields
 
 
-def format_numeric2str(value: int | float, len_fomrat: int = 8):
+def format_numeric2str(value: int | float, len_format: int = 8):
     int_part = dec_part = ""
-    len_fomrat = len_fomrat if len_fomrat > 7 else 7
-    if isinstance(value, float):
-        _strofvalue = f"{value:.{len_fomrat}f}".split(".", 1)
-        int_part = _strofvalue[0]
-        dec_part = _strofvalue[1].rstrip("0") or "0"
-    else:
+    len_format = len_format if len_format > 7 else 7
+    if value == 0:
+        return str(value).rjust(len_format)
+    if isinstance(value, int):
         int_part = str(value)
-    if int_part[0] in ["+", "-"]:
-        int_part = int_part[1:]
+        dec_part = ""
+    else:
+        _strofvalue = "%.*f" % (len_format, value)
+        int_part, dec_part = _strofvalue.split(".", 1)
+        dec_part = dec_part.rstrip("0")
     int_len = len(int_part)
     dec_len = len(dec_part)
-    if int_len > len_fomrat - 1:
-        if int_len == len_fomrat and value >= 0:
-            result = f"{int(value):{len_fomrat}d}"
+    if dec_len == 0:
+        if int_len <= len_format:
+            return int_part.rjust(len_format)
+    else:
+        if int_len + dec_len + 1 <= len_format:
+            return (int_part + "." + dec_part).rjust(len_format)
+    if int_part[0] in ["+", "-"]:
+        int_part = int_part[1:]
+    if int_len > len_format - 1:
+        if int_len == len_format and value >= 0:
+            result = f"{int(value):{len_format}d}"
         else:
-            result = f"{value:+.{len_fomrat-7}e}"
+            result = f"{value:+.{len_format-7}e}"
     elif 1 < int_len:
-        result = f"{value:>.{dec_len}f}"[:len_fomrat]
+        result = _strofvalue[:len_format]
     else:
         ix_isnot0 = (
-            [i for i, ch in enumerate(dec_part) if ch != "0"][0] if dec_part not in ["", "0"] else 0
+            next((i for i, ch in enumerate(dec_part) if ch != "0"), 0)
+            if dec_part not in ["", "0"]
+            else 0
         )
-        if ix_isnot0 > len_fomrat - 7 + (2 if value >= 0 else 1):
-            result = f"{value:.{len_fomrat-7}e}"
+        if ix_isnot0 > len_format - 7 + (2 if value >= 0 else 1):
+            result = f"{value:.{len_format-7}e}"
         else:
-            result = f"{value:>.{dec_len}f}"[:len_fomrat]
-    result = result.rjust(len_fomrat) if result else "不能格式化"
-    return result
+            result = _strofvalue[:len_format]
+    return result.rjust(len_format) if result else "不能格式化"
 
 
 def split_sequence(seq, num):
@@ -577,109 +586,114 @@ class LsDyna_ENTITY(__LsDyna_Base):
         self._pagmfield = _pagmfield
         self.__dict__["__is_inner__"] = False
 
-    def __getitem__(self, pos):
-        def __get_card_field(card, field):
-            try:
-                _card_field = self._cardfield[card]
-                _left = sum(_card_field[:field]) if field else 0
-                _right = sum(_card_field[: field + 1])
-                return self.cards[card][_left:_right]
-            except:
-                return "无法以指定索引获取字段"
-
-        self.__dict__["__is_inner__"] = True
+    def __get_index_combination__(self, pos, parent=None):
         range_card, range_field = [], []
         if isinstance(pos, tuple):
-            if isinstance(pos[0], int):
-                range_card = [pos[0]]
-            elif isinstance(pos[0], slice):
-                range_card = list(range(*pos[0].indices(len(self._cardfield))))
-            if isinstance(pos[1], int):
-                range_field = [[pos[1]]]
-            elif isinstance(pos[1], slice):
-                range_field = [
-                    list(range(*pos[1].indices(len(e))))
-                    for e in [self._cardfield[i] for i in range_card]
-                ]
-        elif isinstance(pos, slice):
-            range_card = list(range(*pos.indices(len(self._cardfield))))
-            range_field = [list(range(len(e))) for e in [self._cardfield[i] for i in range_card]]
-        elif isinstance(pos, str):
-            if pos in self._pagmfield.keys():
-                card, field = self._pagmfield[pos]["index"]
-                if any(isinstance(x, str) for x in [card, field]):
-                    if isinstance(card, str):
-                        _slc = slice(*map(lambda x: int(x) if x else None, card.split(":")))
-                        range_card = list(range(*_slc.indices(len(self.cards))))
-                    else:
-                        raise TypeError("错误的索引方法")
-                    if isinstance(field, str):
-                        _slc = slice(*map(lambda x: int(x) if x else None, field.split(":")))
-                        range_field = [
-                            list(range(*_slc.indices(len(e))))
-                            for e in [self._cardfield[i] for i in range_card]
-                        ]
-                    elif isinstance(field, int):
-                        range_field = [[field]] * len(range_card)
-                    else:
-                        raise TypeError("错误的索引方法")
+            if parent == "__getitem__":
+                if isinstance(pos[0], int):
+                    range_card = [pos[0]]
+                elif isinstance(pos[0], slice):
+                    range_card = list(range(*pos[0].indices(len(self._cardfield))))
+                if isinstance(pos[1], int):
+                    range_field = [[pos[1]]]
+                elif isinstance(pos[1], slice):
+                    range_field = [
+                        list(range(*pos[1].indices(len(e))))
+                        for e in [self._cardfield[i] for i in range_card]
+                    ]
+            elif parent == "__setitem__":
+                if all([isinstance(each, int) for each in pos]):
+                    range_card = [pos[0]]
+                    range_field = [[pos[1]]]
                 else:
-                    range_card = [card]
-                    range_field = [[field]]
+                    raise ValueError("位置索引赋值必须是 [int,int] 或 [int]")
             else:
-                raise KeyError(f"字段 '{pos}' 不在_pagmfield中")
+                raise ValueError("检查调用方法")
+        elif isinstance(pos, slice):
+            if parent == "__getitem__":
+                _s_slice, _e_slice, _n_slice = pos.indices(len(self._cardfield))
+                range_card = list(range(min(_s_slice, _e_slice), max(_s_slice, _e_slice), _n_slice))
+                range_field = [
+                    list(range(len(e))) for e in [self._cardfield[i] for i in range_card]
+                ]
+            elif parent == "__setitem__":
+                raise ValueError("位置索引赋值必须是 [int,int] 或 [int]")
+            else:
+                raise ValueError("检查调用方法")
+        elif isinstance(pos, str):
+            if parent in ["__getitem__", "__setitem__"]:
+                if pos in self._pagmfield.keys():
+                    card_idx, field_idx = self._pagmfield[pos]["index"]
+                    if any(isinstance(x, str) for x in [card_idx, field_idx]):
+                        if isinstance(card_idx, str):
+                            _slc = slice(*map(lambda x: int(x) if x else None, card_idx.split(":")))
+                            range_card = list(range(*_slc.indices(len(self.cards))))
+                        else:
+                            raise TypeError("错误的索引方法")
+                        if isinstance(field_idx, str):
+                            _slc = slice(
+                                *map(lambda x: int(x) if x else None, field_idx.split(":"))
+                            )
+                            range_field = [
+                                list(range(*_slc.indices(len(e))))
+                                for e in [self._cardfield[i] for i in range_card]
+                            ]
+                        elif isinstance(field_idx, int):
+                            range_field = [[field_idx]] * len(range_card)
+                        else:
+                            raise TypeError("错误的索引方法")
+                    else:
+                        range_card = [card_idx]
+                        range_field = [[field_idx]]
+                else:
+                    raise KeyError(f"字段 '{pos}' 不在_pagmfield中")
+            else:
+                raise ValueError("检查调用方法")
         elif isinstance(pos, int):
             range_card = [pos]
-            range_field = [list(range(len(self._cardfield[pos])))]
+            if parent == "__getitem__":
+                range_field = (
+                    [list(range(len(self._cardfield[pos])))] if pos < len(self._cardfield) else []
+                )
+            elif parent == "__setitem__":
+                range_field = "FullLine"
+            else:
+                raise ValueError("检查调用方法")
         else:
             raise TypeError("错误的索引方法")
-        picks = []
-        if not (range_card and range_field):
-            ...
-        else:
-            _ep = [[_c, _f] for _c, _fs in zip(range_card, range_field) for _f in _fs]
-            _ep = [
-                x
-                for x in _ep
-                if len(self.cards[x[0]].rstrip("\n")) >= sum(self._cardfield[x[0]][: x[1] + 1])
-                or (self._cardfield[x[0]][x[1]] > 60)
-            ]
-            _pick_d = defaultdict(list)
-            for _i_c, _i_f in _ep:
-                _pick_str = __get_card_field(_i_c, _i_f)
-                if _pick_str != []:
-                    _pick_d[_i_c].append(_pick_str)
-            picks = [[f"line_{k}", v] for k, v in _pick_d.items() if v]
-        _l_p = len(picks)
-        if _l_p > 1:
-            ...
-        elif _l_p == 1:
-            if len(picks[0][1]) > 1:
-                picks = picks[0][1]
-            else:
-                picks = picks[0][1][0]
-        else:
-            picks = "索引错误 或 未编码全部卡片索引"
-        self.__dict__["__is_inner__"] = False
-        return picks
+        return range_card, range_field
 
-    def __setitem__(self, pos, value):
-        def __set_card_field(card, field, value):
-            try:
-                _card_field = self._cardfield[card]
+    def __clean_index_combination__(self, range_card, range_field):
+        ep = [[_c, _f] for _c, _fs in zip(range_card, range_field) for _f in _fs]
+        ep = [
+            idxc
+            for idxc in ep
+            if (idxc[0] < len(self._cardfield) and idxc[1] < len(self._cardfield[idxc[0]]))
+            and (len(self.cards[idxc[0]].rstrip("\n")) > sum(self._cardfield[idxc[0]][: idxc[1]]))
+        ]
+        return ep
+
+    def __make_card_field__(self, card_idx, field_idx, value=None, parent=None):
+        try:
+            _card_field = self._cardfield[card_idx]
+            _left = sum(_card_field[:field_idx]) if field_idx else 0
+            _right = sum(_card_field[: field_idx + 1])
+            if parent == "__getitem__":
+                return self.cards[card_idx][_left:_right]
+            elif parent == "__setitem__":
                 if isinstance(value, (int, float)):
-                    value = format_numeric2str(value, _card_field[field])
+                    value = format_numeric2str(value, _card_field[field_idx])
                 elif isinstance(value, str):
                     value = (
-                        f"{value:<{_card_field[field]}s}"
-                        if len(value) < _card_field[field]
-                        else value[: _card_field[field]]
+                        f"{value:<{_card_field[field_idx]}s}"
+                        if len(value) < _card_field[field_idx]
+                        else value[: _card_field[field_idx]]
                     )
                 else:
                     raise ValueError("赋值类型错误")
-                _left = sum(_card_field[:field]) if field else 0
-                _right = sum(_card_field[: field + 1])
-                self.cards[card] = self.cards[card][:_left] + value + self.cards[card][_right:]
+                self.cards[card_idx] = (
+                    self.cards[card_idx][:_left] + value + self.cards[card_idx][_right:]
+                )
                 if self.is_edited:
                     self.__outer_obj__._bl_keyfile__diff_kf["mod"].append(
                         [self.keyword, self.str_cardsonly]
@@ -692,51 +706,52 @@ class LsDyna_ENTITY(__LsDyna_Base):
                             [next((_i for _i, _v in enumerate(_pd_all.obj == self) if _v), -1)]
                         ] = _pd_newkw
                         self.__outer_obj__._bl_keyfile__filtercache = {}
-                return self.cards[card]
-            except:
-                return "索引错误 或 未编码全部卡片索引"
+                return self.cards[card_idx]
+            else:
+                raise ValueError("检查调用方法")
+        except:
+            return "无法以指定索引获取字段"
 
+    def __getitem__(self, pos):
+        self.__dict__["__is_inner__"] = True
+        range_card, range_field = self.__get_index_combination__(
+            pos, inspect.currentframe().f_code.co_name
+        )
+        picks = ()
+        if not (range_card and range_field):
+            picks = ()
+        else:
+            _ep = self.__clean_index_combination__(range_card, range_field)
+            _pick_d = defaultdict(list)
+            for _i_c, _i_f in _ep:
+                _pick_str = self.__make_card_field__(
+                    _i_c, _i_f, parent=inspect.currentframe().f_code.co_name
+                )
+                if _pick_str != []:
+                    _pick_d[_i_c].append(_pick_str)
+            picks: list[list] = [[f"line_{k}", v] for k, v in _pick_d.items() if v]
+        _l_p = len(picks)
+        if _l_p > 1:
+            ...
+        elif _l_p == 1:
+            fields = picks[0][1]
+            if len(fields) > 1:
+                picks: list = fields
+            else:
+                picks: str = fields[0]
+        else:
+            picks = ()
+            print("索引错误 或 未编码全部卡片索引")
+        self.__dict__["__is_inner__"] = False
+        return picks
+
+    def __setitem__(self, pos, value):
         self.__dict__["__is_inner__"] = True
         _excl_kw = sum(self.__outer_obj__.__topocls_name__.values(), [])
         if not self.keyword in _excl_kw:
-            range_card, range_field = [], []
-            if isinstance(pos, tuple):
-                if all([isinstance(each, int) for each in pos]):
-                    range_card = [pos[0]]
-                    range_field = [[pos[1]]]
-                else:
-                    raise ValueError("位置索引赋值必须是 [int,int] 或 [int]")
-            elif isinstance(pos, slice):
-                raise ValueError("位置索引赋值必须是 [int,int] 或 [int]")
-            elif isinstance(pos, str):
-                if pos in self._pagmfield.keys():
-                    card, field = self._pagmfield[pos]["index"]
-                    if any(isinstance(x, str) for x in [card, field]):
-                        if isinstance(card, str):
-                            _slc = slice(*map(lambda x: int(x) if x else None, card.split(":")))
-                            range_card = list(range(*_slc.indices(len(self.cards))))
-                        else:
-                            raise TypeError("错误的索引方法")
-                        if isinstance(field, str):
-                            _slc = slice(*map(lambda x: int(x) if x else None, field.split(":")))
-                            range_field = [
-                                list(range(*_slc.indices(len(e))))
-                                for e in [self._cardfield[i] for i in range_card]
-                            ]
-                        elif isinstance(field, int):
-                            range_field = [[field]] * len(range_card)
-                        else:
-                            raise TypeError("错误的索引方法")
-                    else:
-                        range_card = [card]
-                        range_field = [[field]]
-                else:
-                    raise KeyError(f"字段 '{pos}' 不在_pagmfield中")
-            elif isinstance(pos, int):
-                range_card = [pos]
-                range_field = "FullLine"
-            else:
-                raise TypeError("错误的索引方法")
+            range_card, range_field = self.__get_index_combination__(
+                pos, inspect.currentframe().f_code.co_name
+            )
             result = ""
             if not (range_card and range_field):
                 result = "索引错误 或 未编码全部卡片索引"
@@ -744,16 +759,7 @@ class LsDyna_ENTITY(__LsDyna_Base):
                 if range_field == "FullLine":
                     self.cards[range_card[0]] = value
                 else:
-                    _ep = [[_c, _f] for _c, _fs in zip(range_card, range_field) for _f in _fs]
-                    _ep = [
-                        x
-                        for x in _ep
-                        if (
-                            len(self.cards[x[0]].rstrip("\n"))
-                            >= sum(self._cardfield[x[0]][: x[1] + 1])
-                        )
-                        or (self._cardfield[x[0]][x[1]] > 60)
-                    ]
+                    _ep = self.__clean_index_combination__(range_card, range_field)
                     _l_s = len(_ep)
                     if _l_s == 1:
                         if not isinstance(value, (list, tuple)):
@@ -762,12 +768,15 @@ class LsDyna_ENTITY(__LsDyna_Base):
                         if len(value) != _l_s:
                             raise TypeError("目标和字段数量不相等")
                     for i, (c, f) in enumerate(_ep):
-                        __set_card_field(c, f, value[i])
+                        self.__make_card_field__(
+                            c, f, value[i], inspect.currentframe().f_code.co_name
+                        )
                 self.__set_str__()
                 result = self.cards
         else:
             result = f"不处理{_excl_kw}"
         self.__dict__["__is_inner__"] = False
+        return result
 
     def __repr__(self):
         self.__dict__["__is_inner__"] = True
@@ -876,17 +885,12 @@ class LsDyna_NODE(__LsDyna_Base):
         _fn2s = format_numeric2str
         str_cardsonly_parts = [
             _fn2s(self.id, _cf_0[0]),
+            "".join((_fn2s(self.x, _cf_0[1]), _fn2s(self.y, _cf_0[2]), _fn2s(self.z, _cf_0[3]))),
             "".join(
-                [
-                    _fn2s(each, _cf_0[index])
-                    for index, each in ((1, self.x), (2, self.y), (3, self.z))
-                ]
-            ),
-            "".join(
-                [
-                    (_fn2s(each, _cf_0[index + 4]) if not each == "" else " " * _cf_0[index + 4])
-                    for index, each in enumerate(self.card1_add_fields)
-                ]
+                (
+                    (" " * _w if val == "" else _fn2s(val, _w))
+                    for val, _w in zip(self.card1_add_fields, _cf_0[4:])
+                )
             ),
             "\n",
         ]
@@ -1077,7 +1081,7 @@ class LsDyna_ELEMENT_SOLID(__LsDyna_Elem_Factory):
             _fn2s(self.id, _cf_0[0]),
             _fn2s(self.id_part, _cf_0[1]),
             "\n",
-            "".join([_fn2s(each, _cf_1[index]) for index, each in enumerate(self.__id_nodes__)]),
+            "".join([_fn2s(each, _w) for each, _w in zip(self.__id_nodes__, _cf_1)]),
             "\n",
         ]
         self.str_cardsonly = "".join(str_cardsonly_parts) + self.card_EX
@@ -1130,9 +1134,7 @@ class LsDyna_ELEMENT_SHELL(__LsDyna_Elem_Factory):
         str_cardsonly_parts = [
             _fn2s(self.id, _cf_0[0]),
             _fn2s(self.id_part, _cf_0[1]),
-            "".join(
-                [_fn2s(each, _cf_0[index + 2]) for index, each in enumerate(self.__id_nodes__)]
-            ),
+            "".join([_fn2s(each, _w) for each, _w in zip(self.__id_nodes__, _cf_0[2:])]),
             "\n",
         ]
         self.str_cardsonly = "".join(str_cardsonly_parts) + self.card_EX
@@ -1197,8 +1199,8 @@ class LsDyna_ELEMENT_BEAM(__LsDyna_Elem_Factory):
             _fn2s(self.id_part, _cf_0[1]),
             "".join(
                 [
-                    (_fn2s(each, _cf_0[index + 2]) if not each == "" else " " * _cf_0[index + 2])
-                    for index, each in enumerate(self.__id_nodes__ + self.card1_add_fields)
+                    (" " * _w if each == "" else _fn2s(each, _w))
+                    for each, _w in zip(chain(self.__id_nodes__, self.card1_add_fields), _cf_0[2:])
                 ]
             ),
             "\n",
@@ -1300,15 +1302,18 @@ class LsDyna_PART(__LsDyna_Base):
             (f"{self.name:<{_cf_0[0]}s}" if len(self.name) < _cf_0[0] else self.name[: _cf_0[0]]),
             "\n",
             "".join(
-                [
-                    _fn2s(each, _cf_1[index])
-                    for index, each in enumerate([self.id, self.id_sec, self.id_mat])
-                ]
+                [_fn2s(val, _w) for val, _w in zip((self.id, self.id_sec, self.id_mat), _cf_1)]
             ),
             "".join(
                 [
                     (_fn2s(each, _cf_1[index + 3]) if not each == "" else " " * _cf_1[index + 3])
                     for index, each in enumerate(self.card2_add_fields)
+                ]
+            ),
+            "".join(
+                [
+                    (" " * _w if each == "" else _fn2s(each, _w))
+                    for each, _w in zip(self.card2_add_fields, _cf_1[3:])
                 ]
             ),
             "\n",
@@ -1412,9 +1417,9 @@ class LsDyna_DEFINE_CURVE(__LsDyna_Base):
         str_cardsonly_parts = [
             "".join(
                 [
-                    _fn2s(each, _cf_0[index]) if not each == "" else " " * _cf_0[index]
-                    for index, each in enumerate(
-                        [
+                    (" " * _w if val == "" else _fn2s(val, _w))
+                    for val, _w in zip(
+                        (
                             self.id,
                             self.sidr,
                             self.sfa,
@@ -1423,16 +1428,17 @@ class LsDyna_DEFINE_CURVE(__LsDyna_Base):
                             self.offo,
                             self.dattyp,
                             self.lcint,
-                        ]
+                        ),
+                        _cf_0,
                     )
                 ]
             ),
             "\n",
             "\n".join(
                 [
-                    (_fn2s(each[0], _cf_1[0]) + _fn2s(each[1], _cf_1[1]))
-                    for each in zip(self.x, self.y)
-                    if not any([x in [np.nan, []] for x in each])
+                    (_fn2s(xy[0], _cf_1[0]) + _fn2s(xy[1], _cf_1[1]))
+                    for xy in zip(self.x, self.y)
+                    if not any([x in [np.nan, []] for x in xy])
                 ]
             ),
             "\n",
@@ -1527,18 +1533,18 @@ class LsDyna_SET_LIST(__LsDyna_Base):
         str_cardsonly_parts = [
             "".join(
                 [
-                    _fn2s(each, _cf_0[index]) if not each == "" else " " * _cf_0[index]
-                    for index, each in enumerate([self.id, self.da1, self.da2, self.da3, self.da4])
+                    (" " * _w if val == "" else _fn2s(val, _w))
+                    for val, _w in zip((self.id, self.da1, self.da2, self.da3, self.da4), _cf_0)
                 ]
-                + [f"{self.solver:<{_cf_0[5]}s}"]
+                + [f"{self.solver:<{_cf_0[5]}s}"],
             ),
             "\n",
             "\n".join(
                 [
                     "".join(
                         [
-                            _fn2s(each, _cf_1[index]) if not each == "" else " " * _cf_1[index]
-                            for index, each in enumerate(_line)
+                            (" " * _w if val == "" else _fn2s(val, _w))
+                            for val, _w in zip(_line, _cf_1)
                         ]
                     )
                     for _line in self.nids
@@ -1607,8 +1613,8 @@ class bl_keyfile:
                 self.get_parts(is_init=is_init)
                 self.get_define_curve(is_init=is_init)
                 self.get_set_list(is_init=is_init)
-                self.collect_portion_MAT()
-                self.collect_portion_SECTION()
+                self.collect_MAT()
+                self.collect_SECTION()
             else:
                 self.__topocls_name__ = {}
                 self.read_kf(self.kfilepath)
@@ -1695,24 +1701,22 @@ class bl_keyfile:
             for _k, _df in _dd.items():
                 if not self.acc_filterbycache:
                     self.__filtercache = {}
-                if _k not in self.__filtercache.keys():
-                    self.__filtercache[_k] = _df.to_dict(orient="index")
-                _k_f = "_".join([_k, field])
-                if _k_f not in self.__filtercache.keys():
+                if _k not in self.__filtercache:
+                    self.__filtercache[_k] = {"dfdict": _df.to_dict(orient="index")}
+                if field not in self.__filtercache[_k]:
                     ix_map = defaultdict(list)
                     is_iterable = isinstance(_df[field].iloc[0], (list, tuple, np.ndarray))
                     if is_iterable:
-                        for _ix, _r_ids in _df[field].to_dict().items():
+                        for _ix, _r_ids in _df[field].items():
                             for _r_id in _r_ids:
                                 ix_map[_r_id].append(_ix)
                     else:
-                        for _ix, _r_id in _df[field].to_dict().items():
+                        for _ix, _r_id in _df[field].items():
                             ix_map[_r_id].append(_ix)
-                    self.__filtercache[_k_f] = {"_ex_ia": ix_map, "_ex_ix": ix_map.keys()}
-                _ex_ia = self.__filtercache[_k_f]["_ex_ia"]
-                _ex_ix = self.__filtercache[_k_f]["_ex_ix"]
-                _ex_dd = self.__filtercache[_k]
-                _index = sum([_ex_ia[i] for i in ids if i in _ex_ix], [])
+                    self.__filtercache[_k][field] = ix_map
+                _ex_ia = self.__filtercache[_k][field]
+                _ex_dd = self.__filtercache[_k]["dfdict"]
+                _index = sum([_ex_ia[i] for i in ids if i in _ex_ia], [])
                 pick = [_ex_dd[i] for i in _index]
                 if pick:
                     if return_asdf:
@@ -1816,13 +1820,58 @@ class bl_keyfile:
         kw_ranges = [(star_lines[i], star_lines[i + 1]) for i in range(len(star_lines) - 1)]
         return kf_lines, kw_ranges
 
-    def read_kf(self, kfilepath, kwinkf=0, engine="bl", preacc=1):
+    @staticmethod
+    def __clean_line(line: str) -> str | None:
+        if line[0] == "$":
+            return None
+        if line.rstrip():
+            line = line.rstrip() + "\n"
+        ...
+        return line.upper()
+
+    @staticmethod
+    def __get_includefilepath(kfilepath, kw, entity):
+        kfs = []
+        if "PATH" in kw:
+            for path in entity.cards:
+                path = pathlib.Path(path.replace("\n", ""))
+                if path.is_absolute():
+                    ...
+                else:
+                    path = pathlib.Path(kfilepath).parent / path
+                if path.is_dir():
+                    kfs.extend(list(path.glob("*.k")))
+                else:
+                    kfs.append(path)
+        elif "TRANSFORM" in kw:
+            path = pathlib.Path(entity.cards[0].replace("\n", ""))
+            if path.is_absolute():
+                ...
+            else:
+                path = pathlib.Path(kfilepath).parent / path
+            kfs = [path]
+        else:
+            for path in entity.cards:
+                path = pathlib.Path(path.replace("\n", ""))
+                if path.is_absolute():
+                    ...
+                else:
+                    path = pathlib.Path(kfilepath).parent / path
+                kfs.append(path)
+        return kfs
+
+    def read_kf(self, kfilepath, engine="bl", preacc=True, kwinkf=None):
         if engine == "bl":
             with open(kfilepath, encoding=self.encoding) as file:
-                kf_lines = [line.upper() for line in file if line[0] != "$"]
+                kf_lines = [
+                    c_line for line in file if (c_line := bl_keyfile.__clean_line(line)) is not None
+                ]
+            kf_lines = kf_lines[
+                next((idx for idx, line in enumerate(kf_lines) if line.strip()), 0) :
+            ]
             if not kf_lines[0].startswith("*KEYWORD"):
                 raise ValueError("Missing *KEYWORD keyword")
-            star_lines = [index for index, line in enumerate(kf_lines) if line[0] == "*"]
+            star_lines = [idx for idx, line in enumerate(kf_lines) if line[0] == "*"]
             star_lines = star_lines + [star_lines[-1] + 1]
             kw_ranges = [(star_lines[i], star_lines[i + 1]) for i in range(len(star_lines) - 1)]
             if preacc:
@@ -1830,10 +1879,10 @@ class bl_keyfile:
             kwinkf = kwinkf if kwinkf else {}
             if kwinkf:
                 kwinkf = kwinkf
-                _items = kw_ranges
+                _kw_blocks = kw_ranges
             else:
                 kwinkf = {}
-                _items = tqdm(
+                _kw_blocks = tqdm(
                     kw_ranges,
                     desc="KW_ITEM ".ljust(30),
                     leave=True,
@@ -1841,8 +1890,8 @@ class bl_keyfile:
                     bar_format="{l_bar}{bar:10}|     {n_fmt:>15}/{total_fmt:<16}",
                     disable=self.__show_pbar__,
                 )
-            for _s, _e in _items:
-                entity = self.__read_kwstr__(kf_lines=kf_lines[_s:_e])
+            for _s_idx, _e_idx in _kw_blocks:
+                entity = self.__read_kwstr__(kf_lines=kf_lines[_s_idx:_e_idx])
                 _e_kw = entity.keyword
                 if _e_kw not in kwinkf.keys():
                     kwinkf[_e_kw] = [entity]
@@ -1853,43 +1902,17 @@ class bl_keyfile:
                 if _e_kw == "*END":
                     break
                 if _e_kw in self.__include_kw:
-                    _include_kfs = []
-                    if "PATH" in _e_kw:
-                        for path in entity.cards:
-                            path = pathlib.Path(path.replace("\n", ""))
-                            if path.is_absolute():
-                                ...
-                            else:
-                                path = pathlib.Path(kfilepath).parent / path
-                            if path.is_dir():
-                                _include_kfs.extend(list(path.glob("*.k")))
-                            else:
-                                _include_kfs.append(path)
-                    elif "TRANSFORM" in _e_kw:
-                        path = pathlib.Path(entity.cards[0].replace("\n", ""))
-                        if path.is_absolute():
-                            ...
-                        else:
-                            path = pathlib.Path(kfilepath).parent / path
-                        _include_kfs = [path]
-                    else:
-                        for path in entity.cards:
-                            path = pathlib.Path(path.replace("\n", ""))
-                            if path.is_absolute():
-                                ...
-                            else:
-                                path = pathlib.Path(kfilepath).parent / path
-                            _include_kfs.append(path)
+                    _include_kfs = bl_keyfile.__get_includefilepath(kfilepath, _e_kw, entity)
                     self.include_kfs.extend(_include_kfs)
                     for include_kf in _include_kfs:
-                        self.read_kf(include_kf, kwinkf)
+                        self.read_kf(include_kf, kwinkf=kwinkf)
             kwinkf["*KEYWORD"] = [kwinkf["*KEYWORD"][0]]
-            if not isinstance(_items, list):
+            if not isinstance(_kw_blocks, list):
                 self.__ori_kw_order = kwinkf["*KEYWORD"] + self.__ori_kw_order
             _end = kwinkf.pop("*END", "")
             if _end:
                 kwinkf["*END"] = [_end[-1]]
-                if not isinstance(_items, list):
+                if not isinstance(_kw_blocks, list):
                     self.__ori_kw_order = self.__ori_kw_order + [_end[-1]]
             self.keywords: dict[str, LsDyna_ENTITY] = kwinkf
             return self
@@ -1963,13 +1986,11 @@ class bl_keyfile:
                     disable=self.__show_pbar__,
                 )
                 _f_f = lambda x: x if x.strip() else ""
+                _splitter = split_bywidth
                 _nodes = [
-                    list(map(_f_f, split_bywidth(_l, _cf_0)))
-                    for _c in _kw_c
-                    for _l in _f_b(_c)
-                    if _l
+                    [_f_f(s) for s in _splitter(_l, _cf_0)] for _c in _kw_c for _l in _f_b(_c) if _l
                 ]
-                nodes = pd.DataFrame([n[:4] for n in _nodes], columns=_d_c)
+                nodes = pd.DataFrame((n[:4] for n in _nodes), columns=_d_c)
                 nodes["card1_add_fields"] = [
                     {key: vars for key, vars in zip(["TC", "RC"], each)}
                     for each in [x[4:] for x in _nodes]
@@ -2066,11 +2087,9 @@ class bl_keyfile:
                     disable=self.__show_pbar__,
                 )
                 _f_f = lambda x: int(x) if x.strip() else ""
+                _splitter = split_bywidth
                 _f_r = lambda _cf_0: [
-                    list(map(_f_f, split_bywidth(_l, _cf_0)))
-                    for _c in _kw_c
-                    for _l in _f_b(_c)
-                    if _l
+                    [_f_f(s) for s in _splitter(_l, _cf_0)] for _c in _kw_c for _l in _f_b(_c) if _l
                 ]
                 _f_u = lambda x: list(dict.fromkeys([_id for _id in x if _id]))
                 if _kw_type in ["*ELEMENT_SOLID"]:
@@ -2489,48 +2508,43 @@ class bl_keyfile:
         else:
             return _group_by_type[kw_type]
 
-    def collect_portion_MAT(self):
+    def collect_MAT(self):
         mats = []
-        for each in self.keywords.keys():
-            if each.startswith("*MAT"):
-                for mat in self.keywords[each]:
+        for kw in self.keywords.keys():
+            if kw.startswith("*MAT"):
+                for mat in self.keywords[kw]:
                     mats.append([mat["MID"], mat.keyword])
         self.mats = pd.DataFrame(mats, columns=["id", "type"]).astype(dtype={"id": "int32"})
 
-    def collect_portion_SECTION(self):
+    def collect_SECTION(self):
         sections = []
-        for each in self.keywords.keys():
-            if each.startswith("*SEC"):
-                for sec in self.keywords[each]:
+        for kw in self.keywords.keys():
+            if kw.startswith("*SEC"):
+                for sec in self.keywords[kw]:
                     sections.append([sec["SECID"], sec.keyword])
         self.sections = pd.DataFrame(sections, columns=["id", "type"]).astype(dtype={"id": "int32"})
 
     def collect_PARAMETER(self):
-        parameters = {"names": [], "vals_s": [], "keyword": [], "type": []}
-        for k in self.__param_kw:
-            if k in self.keywords.keys():
-                for p in self.keywords[k]:
-                    if len(p.cards) == 1:
-                        parameters["names"].append(p["K"].strip().split()[-1])
-                        parameters["type"].append(p["K"].strip().split()[0])
-                        parameters["vals_s"].append(p["V"].strip())
-                        parameters["keyword"].append(p.keyword)
-                    else:
-                        _f_ep = lambda x: [j.strip() for i in x for j in i[1]]
-                        parameters["names"].extend([x.split()[-1] for x in _f_ep(p["K"])])
-                        parameters["type"].extend([x.split()[0] for x in _f_ep(p["K"])])
-                        parameters["vals_s"].extend(_f_ep(p["V"]))
-                        parameters["keyword"].extend([p.keyword] * len(_f_ep(p["V"])))
-        parameters = pd.DataFrame(parameters)
-
-        def _f_f(x):
-            try:
-                return float(x)
-            except:
-                return x
-
-        parameters["vals_n"] = parameters["vals_s"].apply(_f_f)
-        self.parameters = parameters
+        paras = {"names": [], "vals_s": [], "keyword": [], "type": []}
+        for _pkws in self.__param_kw:
+            if _pkws in self.keywords.keys():
+                for kw in self.keywords[_pkws]:
+                    _pkeys, _pvals = kw["K"], kw["V"]
+                    if not _pkeys:
+                        continue
+                    if isinstance(_pkeys, str):
+                        _pkeys, _pvals = [["占位", [_pkeys]]], [["占位", [_pvals]]]
+                    elif isinstance(_pkeys, list) and len(_pkeys) == 1:
+                        _pkeys, _pvals = [["占位", _pkeys]], [["占位", _pvals]]
+                    _keylist = [_k.split() for _l in _pkeys for _k in _l[-1]]
+                    _vallist = [_v.strip() for _l in _pvals for _v in _l[-1]]
+                    paras["names"].extend([_k[-1] for _k in _keylist])
+                    paras["type"].extend([_t[0] for _t in _keylist])
+                    paras["vals_s"].extend(_vallist)
+                    paras["keyword"].extend([kw.keyword] * len(_pvals))
+        paras = pd.DataFrame(paras)
+        paras["vals_n"] = pd.to_numeric(paras["vals_s"], errors="coerce")
+        self.parameters = paras
 
     def remove_kw(self, kw: str, at_index: int):
         if self.keywords.get(kw, False) is not False and at_index < len(self.keywords[kw]):
@@ -2659,7 +2673,7 @@ class bl_keyfile:
                         file.write(_kw_e.str)
         return path
 
-    def show(self, save3d=0):
+    def show(self, save3d=0, show=1):
         BL_READER = importlib.import_module("BL_READER")
         if self.__parsing_topo:
             d = BL_READER.get_dynatopo.__new__(BL_READER.get_dynatopo)
@@ -2669,49 +2683,109 @@ class bl_keyfile:
             d._get_dynatopo__gropby_elemtype(_elems)
             d.info_elems_estimated_size()
             d._normalize_pos(normalize_pos="experience")
-            d.plot_3d()
+            d.plot_3d(just_pre=0 if show else 1)
             if save3d:
                 d.save_3d()
+            return d
 
     def solve(
         self,
         runpath="",
-        solver=pathlib.Path(os.getenv("lstc_file")).parent.joinpath(
-            "program", "ls-dyna_smp_d_R11_1_0_winx64_ifort160.exe"
-        ),
+        lic: str | dict = "auto",
         NCPU=4,
-        MEMORY=200000000,
+        MEMORY=2_0000_0000,
+        dp=False,
+        mpp=False,
         show_log=0,
     ):
         import subprocess
 
-        runfile = self.save_kf() if any(self.__diff_kf.values()) else self.kfilepath
-        runpath = pathlib.Path(runpath) if runpath else runfile.with_suffix("")
+        solverurlmap = {}
+        ansys_map = {
+            "232": {
+                "lsrun": ("lsprepost410", "LS-Run", "lsdynamsvar.bat"),
+                "MS_MPI_REV": "10.1.12498.18",
+                "INTEL_CMP_REV": "2019.5.281",
+            },
+            "252": {
+                "lsrun": ("lsprepost413", "LS-Run", "lsdynamsvar.bat"),
+                "MS_MPI_REV": "10.1.12498.18",
+                "INTEL_CMP_REV": "2023.1.0",
+            },
+        }
+        ENV = os.environ.copy()
+        if isinstance(lic, dict) and lic.keys() >= {"solver", "cmd"}:
+            solverurlmap = lic
+        elif lic.upper() == "AUTO":
+            _lic = os.getenv("LSTC_LICENSE")
+            if _lic.upper() == "LOCAL":
+                _p = pathlib.Path(os.getenv("lstc_file")).parent.joinpath("program")
+                _s = _p / f"ls-dyna_smp_{'d' if dp else 's'}_R11_1_0_winx64_ifort160.exe"
+                _c = (
+                    f""""{{solver}}" I="{{input}}" O="{{output}}" NCPU={{NCPU}} MEMORY={{MEMORY}}"""
+                )
+            elif _lic.upper() == "ANSYS":
+                ansys_dyna = next((k for k in ENV.keys() if k.startswith("AWP_ROOT")), "")
+                _ver = ansys_dyna.upper().replace("AWP_ROOT", "")
+                _p = pathlib.Path(os.getenv(ansys_dyna, "")).joinpath("ansys", "bin", "winx64")
+                if not _p.exists():
+                    raise ValueError("组件不存在 检查环境变量和路径")
+                _s = (
+                    _p
+                    / f"lsdyna_{'mpp_' if mpp else ''}{'dp' if dp else 'sp'}{'_msmpi' if mpp else ''}.exe"
+                )
+                _c = (
+                    """mpiexec -np {NCPU} -aa -a "{solver}" i={input} memory={MEMORY}"""
+                    if mpp
+                    else """"{solver}" i={input} ncpu={NCPU} memory={MEMORY}"""
+                )
+                _p_base = pathlib.Path(os.getenv(ansys_dyna))
+                ENV["PATH"] = (
+                    rf"{_p_base}\tp\MPI\Microsoft\{ansys_map[_ver]['MS_MPI_REV']}\winx64\Bin" + ";"
+                    rf"{_p_base}\tp\IntelCompiler\{ansys_map[_ver]['INTEL_CMP_REV']}\winx64"
+                    + ";"
+                    + ENV["PATH"]
+                )
+            else:
+                raise ValueError("环境变量LSTC_LICENSE设置错误")
+            solverurlmap = {"solver": _s, "cmd": _c}
+        else:
+            raise ValueError("许可设置错误 请检查输入")
+        orifile = self.save_kf() if any(self.__diff_kf.values()) else self.kfilepath
+        runpath = pathlib.Path(runpath) if runpath else orifile.with_suffix("")
         if runpath.exists():
             shutil.rmtree(runpath)
         runpath.mkdir(parents=True)
-        shutil.copy2(runfile, runpath / runfile.name)
+        runfile = runpath / orifile.name
+        shutil.copy2(orifile, runfile)
         current_path = os.getcwd()
         os.chdir(runpath)
-        res = subprocess.Popen(
-            f""""{solver}" I="{str(runpath / runfile.name)}" O="{str(runpath / "d3plot")}" NCPU={NCPU} MEMORY={MEMORY}""",
+        with subprocess.Popen(
+            solverurlmap["cmd"].format(
+                solver=solverurlmap["solver"],
+                input=str(runfile),
+                output=str(runpath / "d3plot"),
+                NCPU=NCPU,
+                MEMORY=MEMORY,
+            ),
+            env=ENV,
             shell=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-        )
-        with open(runpath / "bl_keyfile_solve.log", "a+") as f:
-            output = []
-            for _s in iter(res.stdout.readline, b""):
-                _s = _s.decode().lstrip().rstrip().replace("\r\n", "").replace("\n", "")
-                if _s:
-                    output.append([datetime.datetime.now(), _s])
-                    f.write("|--->".join(str(x) for x in output[-1]) + "\n")
-                    if show_log:
-                        print("|--->".join(str(x) for x in output[-1]))
-        res.stdin.close()
-        res.stdout.close()
-        res.stderr.close()
+        ) as res:
+            with open(runpath / "bl_keyfile_solve.log", "a+") as f:
+                output = []
+                for _s in iter(res.stdout.readline, b""):
+                    _s = _s.decode().lstrip().rstrip().replace("\r\n", "").replace("\n", "")
+                    if _s:
+                        output.append([datetime.datetime.now(), _s])
+                        f.write("|--->".join(str(x) for x in output[-1]) + "\n")
+                        if show_log:
+                            print("|--->".join(str(x) for x in output[-1]))
+            res.stdin.close()
+            res.stdout.close()
+            res.stderr.close()
         os.chdir(current_path)
         restr = r"^.*Total CPU time\s*=\s*(\d+)\s*seconds.*hours.*minutes"
         for _s in output[::-1]:
@@ -2721,15 +2795,22 @@ class bl_keyfile:
         return {"runpath": runpath, "TotalCpuTime": 0}
 
 
-def __bl_keyfile_solve(f):
-    return bl_keyfile(f, parsing_topo=0, is_init=0, show_pbar=0).solve()
+def __bl_keyfile_solve(f, NCPU=4, MEMORY=2_0000_0000, dp=False, mpp=False, show_log=0):
+    return bl_keyfile(f, parsing_topo=0, is_init=0, show_pbar=0).solve(
+        NCPU=NCPU, MEMORY=MEMORY, dp=dp, mpp=mpp, show_log=show_log
+    )
 
 
 def execute_in_parallel(
     runpath=".",
     filelist: list | set = 0,
-    bar_title="Ls_Dyna_run",
-    max_workers=round(psutil.cpu_count(logical=False) / 4),
+    bar_title="BL_run",
+    max_workers=max(1, psutil.cpu_count(logical=True) // 4),
+    NCPU=4,
+    MEMORY=2_0000_0000,
+    dp=False,
+    mpp=False,
+    show_log=0,
 ):
     runpath = pathlib.Path(runpath if runpath else os.getcwd()).resolve()
     if not runpath.exists():
@@ -2743,7 +2824,10 @@ def execute_in_parallel(
     filelist = runpath.glob("*.k")
     _start_time = time.time()
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(__bl_keyfile_solve, f) for f in filelist]
+        futures = [
+            executor.submit(__bl_keyfile_solve, f, NCPU, MEMORY, dp, mpp, show_log)
+            for f in filelist
+        ]
         _obj = []
         with tqdm(
             total=len(futures),
@@ -2760,3 +2844,13 @@ def execute_in_parallel(
                     + f"|tcm:{round(time.time()-_start_time,2)}s"
                 )
         return _obj
+
+
+if __name__ == "__main__":
+    t1 = time.time()
+    path = pathlib.Path(r"C:\Users\breez\Desktop").rglob("*.k")
+    j = bl_keyfile(list(path)[0], parsing_topo=1, is_init=1, acc_initbythread=0, show_pbar=1)
+    print(f"读入{round(time.time() - t1, 1)}")
+    t1 = time.time()
+    topo = j.show(0, 1)
+    print(f"显示{round(time.time() - t1, 1)}")
