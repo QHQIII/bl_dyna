@@ -7,7 +7,7 @@ DYNA前后处理、可视化及自动优化求解
   j.show()
   ```
 
-  ![image-20251002153335491](res/README/image-20251002153335491.png)
+  ![BLdyna_2026_01_19_18_39_16](res/README/BLdyna_2026_01_19_18_39_16.png)
 
   ```python
   j
